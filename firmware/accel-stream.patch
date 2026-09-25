@@ -1,0 +1,278 @@
+diff --git a/omi/firmware/omi/CMakeLists.txt b/omi/firmware/omi/CMakeLists.txt
+index 4a4de28..b658d4d 100644
+--- a/omi/firmware/omi/CMakeLists.txt
++++ b/omi/firmware/omi/CMakeLists.txt
+@@ -35,6 +35,10 @@ if(CONFIG_OMI_ENABLE_OFFLINE_STORAGE)
+     list(APPEND core_sources src/lib/core/storage.c)
+ endif()
+ 
++if(CONFIG_OMI_ENABLE_ACCELEROMETER)
++    list(APPEND core_sources src/lib/core/accel.c)
++endif()
++
+ target_sources(app PRIVATE ${core_sources} ${app_sources})
+ target_include_directories(app PRIVATE
+     ${CMAKE_CURRENT_SOURCE_DIR}/src
+diff --git a/omi/firmware/omi/omi.conf b/omi/firmware/omi/omi.conf
+index 0f1050d..6612ba2 100644
+--- a/omi/firmware/omi/omi.conf
++++ b/omi/firmware/omi/omi.conf
+@@ -209,7 +209,7 @@ CONFIG_LSM6DSL_ENABLE_TEMP=n
+ #
+ CONFIG_OMI_CODEC_OPUS=y
+ CONFIG_OMI_ENABLE_OFFLINE_STORAGE=y
+-CONFIG_OMI_ENABLE_ACCELEROMETER=n
++CONFIG_OMI_ENABLE_ACCELEROMETER=y
+ CONFIG_OMI_ENABLE_BUTTON=y
+ CONFIG_OMI_ENABLE_SPEAKER=n
+ CONFIG_OMI_ENABLE_BATTERY=y
+diff --git a/omi/firmware/omi/src/lib/core/accel.c b/omi/firmware/omi/src/lib/core/accel.c
+index a1adc37..cfd3771 100644
+--- a/omi/firmware/omi/src/lib/core/accel.c
++++ b/omi/firmware/omi/src/lib/core/accel.c
+@@ -1,25 +1,40 @@
+ #include "accel.h"
+ 
++#include <math.h>
+ #include <zephyr/bluetooth/bluetooth.h>
+ #include <zephyr/bluetooth/gatt.h>
+ #include <zephyr/bluetooth/uuid.h>
+-#include <zephyr/drivers/gpio.h>
+ #include <zephyr/drivers/sensor.h>
+ #include <zephyr/kernel.h>
+ #include <zephyr/logging/log.h>
++#include <zephyr/sys/byteorder.h>
+ 
+ LOG_MODULE_REGISTER(accel, CONFIG_LOG_DEFAULT_LEVEL);
+ 
+-// Accelerometer data
+-static struct sensors mega_sensor;
+-static struct device *lsm6dsl_dev;
++/*
++ * Motion stream for the LSM6DS3TR-C (6-axis accelerometer + gyroscope).
++ *
++ * While a client is subscribed, notifies 12 bytes every ACCEL_STREAM_INTERVAL_MS:
++ * six little-endian int16, ax ay az gx gy gz, in fixed units whatever the sensor's range:
++ * accel 0.122 mg/LSB, gyro 17.5 mdps/LSB (the +-4 g / +-500 dps scales).
++ * With no subscriber the sensor drops back to 12.5 Hz accel and gyro off.
++ *
++ * The sensor is powered by the board's lsm6dsl_en regulator (regulator-boot-on);
++ * this file no longer drives a GPIO of its own.
++ */
+ 
+-// Arbitrary uuid, feel free to change
+ static struct bt_uuid_128 accel_uuid =
+     BT_UUID_INIT_128(BT_UUID_128_ENCODE(0x32403790, 0x0000, 0x1000, 0x7450, 0xBF445E5829A2));
+ static struct bt_uuid_128 accel_uuid_x =
+     BT_UUID_INIT_128(BT_UUID_128_ENCODE(0x32403791, 0x0000, 0x1000, 0x7450, 0xBF445E5829A2));
+ 
++#define ACCEL_STREAM_INTERVAL_MS 20 /* 50 Hz */
++#define ACCEL_LSB_MS2 (0.122e-3 * 9.80665)
++#define GYRO_LSB_RADS (17.5e-3 * 3.14159265358979 / 180.0)
++
++static const struct device *lsm6dsl_dev;
++static bool streaming;
++
+ static void accel_ccc_config_changed_handler(const struct bt_gatt_attr *attr, uint16_t value);
+ static ssize_t accel_data_read_characteristic(struct bt_conn *conn,
+                                               const struct bt_gatt_attr *attr,
+@@ -28,14 +43,14 @@ static ssize_t accel_data_read_characteristic(struct bt_conn *conn,
+                                               uint16_t offset);
+ 
+ static struct bt_gatt_attr accel_service_attr[] = {
+-    BT_GATT_PRIMARY_SERVICE(&accel_uuid), // primary description
++    BT_GATT_PRIMARY_SERVICE(&accel_uuid),
+     BT_GATT_CHARACTERISTIC(&accel_uuid_x.uuid,
+                            BT_GATT_CHRC_READ | BT_GATT_CHRC_NOTIFY,
+                            BT_GATT_PERM_READ,
+                            accel_data_read_characteristic,
+                            NULL,
+-                           NULL),                                                          // data type
+-    BT_GATT_CCC(accel_ccc_config_changed_handler, BT_GATT_PERM_READ | BT_GATT_PERM_WRITE), // scheduler
++                           NULL),
++    BT_GATT_CCC(accel_ccc_config_changed_handler, BT_GATT_PERM_READ | BT_GATT_PERM_WRITE),
+ };
+ static struct bt_gatt_service accel_service = BT_GATT_SERVICE(accel_service_attr);
+ 
+@@ -45,105 +60,117 @@ static ssize_t accel_data_read_characteristic(struct bt_conn *conn,
+                                               uint16_t len,
+                                               uint16_t offset)
+ {
+-    LOG_INF("Acceleration data read characteristic");
+-    int axis_mode = 6; // 3 for accel, 6 for (also) gyro
++    uint8_t axis_mode = 6; /* 6 = accel + gyro */
+     return bt_gatt_attr_read(conn, attr, buf, len, offset, &axis_mode, sizeof(axis_mode));
+ }
+ 
+-#define ACCEL_REFRESH_INTERVAL 1000 // 1.0 seconds
+-
+-void broadcast_accel(struct k_work *work_item);
+-K_WORK_DELAYABLE_DEFINE(accel_work, broadcast_accel);
+-
+-void broadcast_accel(struct k_work *work_item)
++static int16_t to_lsb(const struct sensor_value *value, double lsb)
+ {
+-    struct bt_conn *current_connection = NULL; // This will need to be passed in
+-
+-    sensor_sample_fetch_chan(lsm6dsl_dev, SENSOR_CHAN_ACCEL_XYZ);
+-    sensor_channel_get(lsm6dsl_dev, SENSOR_CHAN_ACCEL_X, &mega_sensor.a_x);
+-    sensor_channel_get(lsm6dsl_dev, SENSOR_CHAN_ACCEL_Y, &mega_sensor.a_y);
+-    sensor_channel_get(lsm6dsl_dev, SENSOR_CHAN_ACCEL_Z, &mega_sensor.a_z);
+-
+-    sensor_sample_fetch_chan(lsm6dsl_dev, SENSOR_CHAN_GYRO_XYZ);
+-    sensor_channel_get(lsm6dsl_dev, SENSOR_CHAN_GYRO_X, &mega_sensor.g_x);
+-    sensor_channel_get(lsm6dsl_dev, SENSOR_CHAN_GYRO_Y, &mega_sensor.g_y);
+-    sensor_channel_get(lsm6dsl_dev, SENSOR_CHAN_GYRO_Z, &mega_sensor.g_z);
++    double scaled = round(sensor_value_to_double(value) / lsb);
++    if (scaled > INT16_MAX) {
++        return INT16_MAX;
++    }
++    if (scaled < INT16_MIN) {
++        return INT16_MIN;
++    }
++    return (int16_t) scaled;
++}
+ 
+-    // Only time mega sensor is changed is through here (hopefully), so no chance of race condition
+-    int err = bt_gatt_notify(current_connection, &accel_service.attrs[1], &mega_sensor, sizeof(mega_sensor));
++static int set_rate(int accel_hz, int accel_micro, int gyro_hz)
++{
++    struct sensor_value accel_odr = {.val1 = accel_hz, .val2 = accel_micro};
++    struct sensor_value gyro_odr = {.val1 = gyro_hz, .val2 = 0};
++    int err = sensor_attr_set(lsm6dsl_dev, SENSOR_CHAN_ACCEL_XYZ, SENSOR_ATTR_SAMPLING_FREQUENCY, &accel_odr);
+     if (err) {
+-        LOG_ERR("Error updating Accelerometer data");
++        LOG_ERR("accel odr (err %d)", err);
++        return err;
++    }
++    /* Not every driver accepts 0 Hz for the gyro; best effort when stopping. */
++    err = sensor_attr_set(lsm6dsl_dev, SENSOR_CHAN_GYRO_XYZ, SENSOR_ATTR_SAMPLING_FREQUENCY, &gyro_odr);
++    if (err && gyro_hz) {
++        LOG_ERR("gyro odr (err %d)", err);
++        return err;
+     }
+-    k_work_reschedule(&accel_work, K_MSEC(ACCEL_REFRESH_INTERVAL));
++    return 0;
+ }
+ 
+-struct gpio_dt_spec accel_gpio_pin = {.port = DEVICE_DT_GET(DT_NODELABEL(gpio1)),
+-                                      .pin = 8,
+-                                      .dt_flags = GPIO_INT_DISABLE};
++static void broadcast_accel(struct k_work *work_item);
++K_WORK_DELAYABLE_DEFINE(accel_work, broadcast_accel);
++
++static void broadcast_accel(struct k_work *work_item)
++{
++    if (!streaming) {
++        return;
++    }
++    struct sensor_value a[3], g[3];
++    uint8_t packet[12];
++
++    if (sensor_sample_fetch(lsm6dsl_dev) == 0 && sensor_channel_get(lsm6dsl_dev, SENSOR_CHAN_ACCEL_XYZ, a) == 0 &&
++        sensor_channel_get(lsm6dsl_dev, SENSOR_CHAN_GYRO_XYZ, g) == 0) {
++        for (int i = 0; i < 3; i++) {
++            sys_put_le16((uint16_t) to_lsb(&a[i], ACCEL_LSB_MS2), &packet[2 * i]);
++            sys_put_le16((uint16_t) to_lsb(&g[i], GYRO_LSB_RADS), &packet[6 + 2 * i]);
++        }
++        /* NULL conn notifies every subscribed connection. */
++        int err = bt_gatt_notify(NULL, &accel_service.attrs[1], packet, sizeof(packet));
++        if (err && err != -ENOTCONN) {
++            LOG_DBG("accel notify (err %d)", err);
++        }
++    }
++    k_work_reschedule(&accel_work, K_MSEC(ACCEL_STREAM_INTERVAL_MS));
++}
+ 
+-// Use d4,d5
+ static void accel_ccc_config_changed_handler(const struct bt_gatt_attr *attr, uint16_t value)
+ {
+     if (value == BT_GATT_CCC_NOTIFY) {
+-        LOG_INF("Client subscribed for notifications");
+-    } else if (value == 0) {
+-        LOG_INF("Client unsubscribed from notifications");
++        LOG_INF("motion stream on");
++        if (set_rate(52, 0, 52) == 0) {
++            streaming = true;
++            k_work_reschedule(&accel_work, K_NO_WAIT);
++        }
+     } else {
+-        LOG_ERR("Invalid CCC value: %u", value);
++        LOG_INF("motion stream off");
++        accel_off();
+     }
+ }
+ 
+ int accel_start(void)
+ {
+-    struct sensor_value odr_attr;
+     lsm6dsl_dev = DEVICE_DT_GET_ONE(st_lsm6dsl);
+-    k_msleep(50);
+-    if (lsm6dsl_dev == NULL) {
+-        LOG_ERR("Could not get LSM6DSL device");
+-        return 0;
+-    }
+     if (!device_is_ready(lsm6dsl_dev)) {
+-        LOG_ERR("LSM6DSL: not ready");
++        LOG_ERR("LSM6DS3TR-C not ready");
+         return 0;
+     }
+-    odr_attr.val1 = 10;
+-    odr_attr.val2 = 0;
+-
+-    if (gpio_is_ready_dt(&accel_gpio_pin)) {
+-        LOG_PRINTK("Speaker Pin ready\n");
+-    } else {
+-        LOG_PRINTK("Error setting up speaker Pin\n");
+-        return -1;
+-    }
+-    if (gpio_pin_configure_dt(&accel_gpio_pin, GPIO_OUTPUT_INACTIVE) < 0) {
+-        LOG_PRINTK("Error setting up Haptic Pin\n");
+-        return -1;
+-    }
+-    gpio_pin_set_dt(&accel_gpio_pin, 1);
+-    if (sensor_attr_set(lsm6dsl_dev, SENSOR_CHAN_ACCEL_XYZ, SENSOR_ATTR_SAMPLING_FREQUENCY, &odr_attr) < 0) {
+-        LOG_ERR("Cannot set sampling frequency for Accelerometer.");
+-        return 0;
++    /* Best effort: the packet is converted to fixed units in broadcast_accel, so the
++     * sensor's range only affects clipping. The driver round-trips these through
++     * integer g and degrees, which can miss its table; never fail start over it. */
++    struct sensor_value accel_fs, gyro_fs;
++    sensor_g_to_ms2(4, &accel_fs);
++    sensor_degrees_to_rad(500, &gyro_fs);
++    if (sensor_attr_set(lsm6dsl_dev, SENSOR_CHAN_ACCEL_XYZ, SENSOR_ATTR_FULL_SCALE, &accel_fs) < 0) {
++        LOG_WRN("accel full scale left at default");
+     }
+-    if (sensor_attr_set(lsm6dsl_dev, SENSOR_CHAN_GYRO_XYZ, SENSOR_ATTR_SAMPLING_FREQUENCY, &odr_attr) < 0) {
+-        LOG_ERR("Cannot set sampling frequency for gyro.");
+-        return 0;
++    if (sensor_attr_set(lsm6dsl_dev, SENSOR_CHAN_GYRO_XYZ, SENSOR_ATTR_FULL_SCALE, &gyro_fs) < 0) {
++        LOG_WRN("gyro full scale left at default");
+     }
+-    if (sensor_sample_fetch(lsm6dsl_dev) < 0) {
+-        LOG_ERR("Sensor sample update error");
++    if (set_rate(12, 500000, 0) != 0) {
+         return 0;
+     }
+-
+-    LOG_INF("Accelerometer is ready for use \n");
+-
++    LOG_INF("motion ready (idle until subscribed)");
+     return 1;
+ }
+ 
+ void register_accel_service(struct bt_conn *conn)
+ {
++    ARG_UNUSED(conn);
+     bt_gatt_service_register(&accel_service);
+ }
+ 
+ void accel_off(void)
+ {
+-    gpio_pin_set_dt(&accel_gpio_pin, 0);
++    streaming = false;
++    k_work_cancel_delayable(&accel_work);
++    if (lsm6dsl_dev != NULL && device_is_ready(lsm6dsl_dev)) {
++        (void) set_rate(12, 500000, 0);
++    }
+ }
