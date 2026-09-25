@@ -1,0 +1,18 @@
+[project]
+name = "sideband"
+version = "0.1.0"
+description = "Background Bluetooth hold for an Omi pendant on a Mac."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+dependencies = ["bleak>=0.22"]
+
+[project.scripts]
+sideband = "sideband.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
