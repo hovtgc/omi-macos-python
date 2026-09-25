@@ -1,11 +1,15 @@
 [project]
 name = "sideband"
-version = "0.1.0"
-description = "Background Bluetooth hold for an Omi pendant on a Mac."
+version = "0.2.0"
+description = "Mac companion for an Omi pendant: background Bluetooth hold, button → Mac actions, a tap-and-tilt game."
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
 dependencies = ["bleak>=0.22"]
+
+[project.optional-dependencies]
+audio = ["av>=12"]
+firmware = ["smpclient>=7"]
 
 [project.scripts]
 sideband = "sideband.cli:main"
