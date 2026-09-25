@@ -37,6 +37,7 @@ from sideband.inputs import (
     installed_apps,
 )
 from sideband.motion import MOTION_UUID, Tilt, parse_motion
+from sideband.voice import VoiceListener, model_path
 from sideband.protocol import AUDIO_CODEC_UUID, AUDIO_DATA_UUID, BATTERY_LEVEL_UUID, codec_name, strip_packet
 
 PUMP_MS = 10
@@ -63,6 +64,7 @@ class Radio(threading.Thread):
         self.frames = 0
         self.level_db = -90.0
         self.mic_on = False
+        self.pcm_sink = None  # set while voice control listens; gets 16 kHz mono s16 PCM
         self._decoder = None
         self._lock = threading.Lock()
         self._loop: asyncio.AbstractEventLoop | None = None
@@ -130,9 +132,13 @@ class Radio(threading.Thread):
         if not self.mic_on or self._decoder is None:
             return
         try:
-            pcm = array.array("h", self._decoder.decode(payload))
+            decoded = self._decoder.decode(payload)
         except Exception:
             return
+        sink = self.pcm_sink
+        if sink is not None:
+            sink(decoded)
+        pcm = array.array("h", decoded)
         if pcm:
             rms = math.sqrt(sum(s * s for s in pcm) / len(pcm))
             self.level_db = 20 * math.log10(max(rms, 1.0) / 32768)
@@ -166,6 +172,9 @@ class InputWindow:
         self.map = InputMap.load(app.map_path)
         self.decoder = ButtonDecoder()
         self.game: GameWindow | None = None
+        self.voice: VoiceListener | None = None
+        self.voice_on = False
+        self.voice_heard = ""
         self.apps = installed_apps(APP_FOLDERS)
         self.shortcuts: list[str] = []
         self.presses = 0
@@ -265,9 +274,10 @@ class InputWindow:
         ttk.Label(frame, textvariable=self.motion_info, wraplength=330).grid(row=12, column=0, columnspan=2, sticky="w", pady=(10, 0))
         self.state_info = tk.StringVar(value="device state —")
         ttk.Label(frame, textvariable=self.state_info, foreground="#888").grid(row=10, column=0, columnspan=2, sticky="w")
-        ttk.Button(frame, text="Play Omi Flap 3D", command=self._open_game).grid(
-            row=11, column=0, columnspan=2, sticky="w", pady=(12, 0)
-        )
+        games = ttk.Frame(frame)
+        games.grid(row=11, column=0, columnspan=2, sticky="w", pady=(12, 0))
+        ttk.Button(games, text="Play Omi Flap 3D", command=self._open_game).pack(side="left")
+        ttk.Button(games, text="Play Voice Flap", command=self._open_voice_game).pack(side="left", padx=8)
         return frame
 
     def _build_map(self, frame: ttk.LabelFrame) -> ttk.LabelFrame:
@@ -418,6 +428,38 @@ class InputWindow:
             self.game = GameWindow(self.root, self._game_closed, self._pendant_steer, self._game_key)
             self._log("Omi Flap 3D open: taps flap instead of running actions")
 
+    def _open_voice_game(self) -> None:
+        if self.game is not None:
+            return
+        self.voice_on, self.voice_heard = False, "loading voice model…"
+        self.voice = VoiceListener(
+            model_path(self.app.support_dir),
+            lambda word: self.events.put((time.monotonic(), "voice_cmd", word)),
+            lambda text: self.events.put((time.monotonic(), "voice_text", text)),
+        )
+        self.voice.start()
+        self.game = GameWindow(self.root, self._game_closed, voice=True, voice_status=lambda: (self.voice_on, self.voice_heard))
+        self._log("Voice Flap open: tap the pendant to unmute, say go left / right / up / down (nothing recorded)")
+
+    def _toggle_voice(self) -> None:
+        if self.voice is None:
+            return
+        if not self.voice_on:
+            error = self.radio.set_mic(True)
+            if error:
+                self.voice_heard = error
+                self._log(f"voice: {error}")
+                return
+            self.voice.reset()
+            self.radio.pcm_sink = self.voice.feed
+            self.voice_on = True
+            self._log("voice: listening")
+        else:
+            self.radio.pcm_sink = None
+            self.radio.set_mic(False)
+            self.voice_on = False
+            self._log("voice: muted")
+
     def _pendant_steer(self) -> tuple[float, str] | None:
         if time.monotonic() - self.motion_at > 0.5:
             return None
@@ -468,6 +510,11 @@ class InputWindow:
     def _game_closed(self) -> None:
         self.game = None
         self._log("Omi Flap 3D closed")
+        if self.voice is not None:
+            self.radio.pcm_sink = None
+            self.radio.set_mic(False)
+            self.voice.close()
+            self.voice, self.voice_on = None, False
 
     def _on_button(self, raw: bytes, at: float) -> None:
         code = button_code(raw)
@@ -479,7 +526,10 @@ class InputWindow:
             self.root.after(FLASH_MS, lambda: self.led.itemconfigure(self.led_dot, fill=IDLE))
         self.button_info.set(f"taps {self.presses} · last {kind} (code {code})")
         if self.game is not None:
-            if tap:  # the game reacts to raw taps at once; no gesture decoding delay
+            if self.voice is not None:  # voice game: one tap mutes / unmutes the mic
+                if kind == "single":
+                    self._toggle_voice()
+            elif tap:  # the game reacts to raw taps at once; no gesture decoding delay
                 self.game.flap(BOOST if kind == "double" else 1.0)
             return
         self._log(f"button  {raw.hex()}  {kind}")
@@ -495,6 +545,12 @@ class InputWindow:
             self.device.set(str(rest[0]))
         elif kind == "codec":
             self.codec.set(f"codec {rest[0]}")
+        elif kind == "voice_cmd":
+            if self.game is not None and self.voice_on:
+                self.game.command(str(rest[0]))
+                self._log(f"voice: {rest[0]}")
+        elif kind == "voice_text":
+            self.voice_heard = str(rest[0])
         elif kind == "refill":
             for gesture in self.rows:
                 self._fill_choices(gesture)
@@ -537,6 +593,8 @@ class InputWindow:
         self.log.configure(state="disabled")
 
     def close(self) -> None:
+        if self.voice is not None:
+            self.voice.close()
         self.radio.close()
         self.root.destroy()
 
