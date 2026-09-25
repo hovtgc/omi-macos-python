@@ -10,6 +10,7 @@ dependencies = ["bleak>=0.22"]
 [project.optional-dependencies]
 audio = ["av>=12"]
 firmware = ["smpclient>=7"]
+voice = ["vosk>=0.3.44", "av>=12"]
 
 [project.scripts]
 sideband = "sideband.cli:main"

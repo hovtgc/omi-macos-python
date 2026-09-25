@@ -21,7 +21,7 @@ USB does not carry audio. Do not add a USB transport.
 - `radio.py` is the only module allowed to import `bleak` or `smpclient`.
 - Button gestures come from the firmware's codes (`inputs.BUTTON_CODES`). Do not re-derive them from timing. A 3 s hold powers the pendant off and cannot be mapped.
 - Tests must pass with no pendant and no Bluetooth adapter.
-- Do not add Deepgram, Firebase, accounts, or network transcription. Nothing is recorded unless the user passes `--wav`.
+- Do not add Deepgram, Firebase, accounts, or network transcription. Nothing is recorded unless the user passes `--wav`. Voice commands use offline Vosk with a fixed command grammar; audio is dropped after recognition.
 - Never flash firmware without the owner's explicit yes in chat. The bootloader has no rollback.
 
 ## Bluetooth permission (read this first)
@@ -38,7 +38,7 @@ macOS charges Bluetooth to the app that launched the process. Python started fro
 
 ```sh
 sh scripts/test.sh
-python3 -m venv .venv && .venv/bin/pip install -e '.[audio,firmware]'
+python3 -m venv .venv && .venv/bin/pip install -e '.[audio,firmware,voice]'
 .venv/bin/sideband protocol
 .venv/bin/sideband --via-app scan
 .venv/bin/sideband --via-app services --address <id>
@@ -62,7 +62,8 @@ A connected pendant stops advertising. Close the window before `firmware` or `sc
 | `src/sideband/status.py` | Log summary lines. Pure. |
 | `src/sideband/inputs.py` | Characteristic names, button codes, Mac actions, gesture map. Pure. |
 | `src/sideband/motion.py` | Motion payload parsing and tilt. Pure. |
-| `src/sideband/game.py` | Omi Flap 3D: pure `Flight` plus a Tk renderer. |
+| `src/sideband/game.py` | Omi Flap 3D and Voice Flap: pure `Flight` plus a Tk renderer. |
+| `src/sideband/voice.py` | Voice commands: pure `CommandSpotter` plus a Vosk listener thread. |
 | `src/sideband/audio.py` | Optional WAV capture (PyAV for Opus). |
 | `src/sideband/bundle.py` | Sideband.app and LaunchAgent builders. |
 | `src/sideband/radio.py` | bleak and SMP sessions. |

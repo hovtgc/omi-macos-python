@@ -6,6 +6,7 @@ A Python Mac app for the [Omi](https://github.com/BasedHardware/omi) pendant. It
 - maps single and double taps to Mac actions: open or switch apps, keystrokes, Shortcuts, URLs, volume, notifications, AppleScript, shell,
 - shows every live input (button, mic stream, battery, device state) in one window,
 - includes **Omi Flap 3D**, a first-person tap-to-flap game that steers with pendant tilt once the firmware streams motion (arrow keys until then).
+- includes **Omi Voice Flap**: the same game driven by voice. Tap the pendant to unmute, then say "go left / right / up / down / stop". Speech is recognised on the Mac with Vosk and a small offline English model; nothing is recorded or uploaded.
 
 Audio never leaves the Mac, and nothing is recorded unless you ask for a WAV. MIT licensed. This is not the Omi phone app.
 
@@ -13,7 +14,7 @@ Audio never leaves the Mac, and nothing is recorded unless you ask for a WAV. MI
 
 ```sh
 python3 -m venv .venv            # Python 3.10+
-.venv/bin/pip install -e '.[audio,firmware]'
+.venv/bin/pip install -e '.[audio,firmware,voice]'
 sh scripts/test.sh
 .venv/bin/sideband build-app     # ~/Applications/Sideband.app, holds the Bluetooth permission
 .venv/bin/sideband --via-app scan
@@ -23,6 +24,14 @@ sh scripts/test.sh
 Wake the pendant and keep it next to the Mac. macOS asks once for Bluetooth for **Sideband**. For keystroke actions, turn Sideband on in System Settings → Privacy & Security → Accessibility (the window has a button for it).
 
 Why the app wrapper: macOS gives Bluetooth to the app that launched a process. Python started from an IDE, an agent, or launchd has no such app and is killed silently. `Sideband.app` is a tiny signed-ad-hoc bundle that carries the permission and runs this venv's Python.
+
+Voice Flap needs the Vosk English model once (~40 MB, from the Vosk project):
+
+```sh
+mkdir -p ~/Library/Application\ Support/Sideband/models && cd "$_" \
+  && curl -LO https://alphacephei.com/vosk/models/vosk-model-small-en-us-0.15.zip \
+  && unzip -q vosk-model-small-en-us-0.15.zip && rm vosk-model-small-en-us-0.15.zip
+```
 
 ## Run in the background
 

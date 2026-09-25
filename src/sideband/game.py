@@ -1,4 +1,7 @@
-"""Omi Flap 3D: first person through a tunnel of walls. Tap to flap, tilt to steer.
+"""Omi Flap 3D: fly a ball through a tunnel of walls. Tap to flap, tilt to steer.
+
+Voice mode (Omi Voice Flap): a pendant tap mutes / unmutes the mic, and "go left / right / up /
+down / stop" nudge the ball, which hovers instead of falling.
 
 Pendant tap (or space / up / click) flaps; a double tap flaps harder. Steering comes from pendant
 tilt when the firmware streams motion, otherwise from the left/right arrow keys (or A/D). Tuned
@@ -29,6 +32,11 @@ STEER_SPEED = 6.5
 STEER_ACCEL = 10.0
 RETRY_S = 0.6
 KEEP_BEHIND = 6.0  # passed walls stay until they are behind the chase camera
+# Voice mode: no gravity. Each spoken command drifts the ball for NUDGE_S, then it holds position.
+VOICE_SPEED = 5.8
+NUDGE_S = 0.8
+NUDGE_SIDE = 4.0  # units per second sideways while a nudge lasts
+NUDGE_LIFT = 3.2  # units per second up or down
 
 # View
 WIDTH, HEIGHT = 900, 620
@@ -64,6 +72,10 @@ class Flight:
     started: bool = False
     alive: bool = True
     since_death: float = 0.0
+    voice: bool = False
+    nudge_x: float = 0.0  # -1, 0, 1 while a spoken nudge lasts
+    nudge_y: float = 0.0
+    nudge_left_s: float = 0.0
 
     def __post_init__(self) -> None:
         self.rng = random.Random(self.seed)
@@ -71,7 +83,7 @@ class Flight:
 
     def reset(self) -> None:
         best, seed = self.best, self.rng.randrange(1 << 30)
-        self.__init__(seed=seed)  # type: ignore[misc]
+        self.__init__(seed=seed, voice=self.voice)  # type: ignore[misc]
         self.best = best
 
     def flap(self, strength: float = 1.0) -> None:
@@ -82,6 +94,21 @@ class Flight:
         self.started = True
         self.vy = FLAP_V * strength
 
+    def command(self, word: str) -> None:
+        """Voice mode: "left", "right", "up", "down" nudge for NUDGE_S; "stop" holds. Any word starts or retries."""
+        if not self.alive:
+            if self.since_death < RETRY_S:
+                return
+            self.reset()
+        self.started = True
+        if word == "stop":
+            self.nudge_x = self.nudge_y = 0.0
+            self.nudge_left_s = 0.0
+            return
+        self.nudge_x = {"left": -1.0, "right": 1.0}.get(word, 0.0)
+        self.nudge_y = {"up": 1.0, "down": -1.0}.get(word, 0.0)
+        self.nudge_left_s = NUDGE_S
+
     def step(self, dt: float, steer: float = 0.0) -> None:
         """Advance by `dt` seconds. `steer` is -1 (left) … 1 (right)."""
         if not self.alive:
@@ -89,12 +116,22 @@ class Flight:
             return
         if not self.started:
             return
-        target = max(-1.0, min(1.0, steer)) * STEER_SPEED
-        self.vx += max(-STEER_ACCEL * dt, min(STEER_ACCEL * dt, target - self.vx))
+        if self.voice:
+            self.nudge_left_s = max(0.0, self.nudge_left_s - dt)
+            active = self.nudge_left_s > 0
+            side = steer if steer else (self.nudge_x if active else 0.0)
+            target_x = max(-1.0, min(1.0, side)) * (STEER_SPEED if steer else NUDGE_SIDE)
+            target_y = (self.nudge_y if active else 0.0) * NUDGE_LIFT
+            self.vy += max(-STEER_ACCEL * dt, min(STEER_ACCEL * dt, target_y - self.vy))
+            speed = VOICE_SPEED
+        else:
+            target_x = max(-1.0, min(1.0, steer)) * STEER_SPEED
+            self.vy = max(self.vy - GRAVITY * dt, -MAX_FALL)
+            speed = SPEED
+        self.vx += max(-STEER_ACCEL * dt, min(STEER_ACCEL * dt, target_x - self.vx))
         self.x = max(-HALF_W + RADIUS, min(HALF_W - RADIUS, self.x + self.vx * dt))
-        self.vy = max(self.vy - GRAVITY * dt, -MAX_FALL)
         self.y = min(self.y + self.vy * dt, CEIL - RADIUS)
-        before, self.z = self.z, self.z + SPEED * dt
+        before, self.z = self.z, self.z + speed * dt
         for wall in self.walls:
             if before < wall[0] <= self.z:
                 if self._through(wall):
@@ -147,8 +184,14 @@ class GameWindow:
         on_close: Callable[[], None],
         steer_source: Callable[[], tuple[float, str] | None] = lambda: None,
         on_key: Callable[[str], None] = lambda _k: None,
+        voice: bool = False,
+        voice_status: Callable[[], tuple[bool, str]] = lambda: (False, ""),
     ) -> None:
-        self.game = Flight(seed=random.randrange(1 << 30))
+        self.game = Flight(seed=random.randrange(1 << 30), voice=voice)
+        self.voice = voice
+        self.voice_status = voice_status
+        self.last_command: tuple[str, float] = ("", -10.0)
+        self.clock = 0.0
         self.on_close = on_close
         self.steer_source = steer_source
         self.on_key = on_key
@@ -158,13 +201,17 @@ class GameWindow:
         self.cam = [self.game.x, self.game.y + CAM_UP]
         self.steer_now, self.steer_label = 0.0, ""
         self.top = tk.Toplevel(parent)
-        self.top.title("Omi Flap 3D")
+        self.top.title("Omi Voice Flap" if voice else "Omi Flap 3D")
         self.top.resizable(False, False)
         self.canvas = tk.Canvas(self.top, width=WIDTH, height=HEIGHT, bg=_mix(SKY_TOP, SKY_TOP, 0), highlightthickness=0)
         self.canvas.pack()
         self._sky()
-        for key in ("<space>", "<Up>", "w"):
-            self.top.bind(key, lambda _e: self.flap())
+        if voice:  # arrow keys stand in for spoken commands, space starts / holds
+            for key, word in (("<Up>", "up"), ("<Down>", "down"), ("<Left>", "left"), ("<Right>", "right"), ("<space>", "stop")):
+                self.top.bind(key, lambda _e, w=word: self.command(w))
+        else:
+            for key in ("<space>", "<Up>", "w"):
+                self.top.bind(key, lambda _e: self.flap())
         self.canvas.bind("<Button-1>", lambda _e: self.flap())
         self.top.bind("<KeyPress>", self._key_down)
         self.top.bind("<KeyRelease>", lambda e: self.keys.discard(e.keysym.lower()))
@@ -176,6 +223,12 @@ class GameWindow:
         self.game.flap(strength)
         self.flash = 8
 
+    def command(self, word: str) -> None:
+        """A spoken (or arrow-key) command in voice mode."""
+        self.game.command(word)
+        self.last_command = (word, self.clock)
+        self.flash = 8
+
     def _key_down(self, event: tk.Event) -> None:
         key = event.keysym.lower()
         self.keys.add(key)
@@ -183,6 +236,8 @@ class GameWindow:
             self.on_key(key)
 
     def _steer(self) -> tuple[float, str]:
+        if self.voice:
+            return 0.0, "voice"
         pendant = self.steer_source()
         if pendant is not None:
             return pendant
@@ -191,6 +246,7 @@ class GameWindow:
 
     def _tick(self) -> None:
         dt = FRAME_MS / 1000
+        self.clock += dt
         self.steer_now, self.steer_label = self._steer()
         g = self.game
         g.step(dt, self.steer_now)
@@ -321,20 +377,45 @@ class GameWindow:
             c.create_text(WIDTH - 20, 26, anchor="e", text=f"best {g.best}", fill="#c9d4ff", font=("Helvetica", 14), tags="dyn")
         c.create_rectangle(0, HEIGHT - 40, WIDTH, HEIGHT, fill="#0a0f22", outline="", stipple="gray50", tags="dyn")
         c.create_text(16, HEIGHT - 20, anchor="w", fill="#aab4d4", font=("Helvetica", 12), tags="dyn",
-                      text=f"steer: {self.steer_label}   ·   tap: flap   ·   double tap: big flap")
+                      text=("tap pendant: mute / unmute   ·   say go left · right · up · down · stop   ·   arrow keys work too"
+                            if self.voice else f"steer: {self.steer_label}   ·   tap: flap   ·   double tap: big flap"))
         bx = WIDTH - 150
         c.create_rectangle(bx, HEIGHT - 27, bx + 130, HEIGHT - 13, outline="#5b6a99", tags="dyn")
         c.create_line(bx + 65, HEIGHT - 30, bx + 65, HEIGHT - 10, fill="#5b6a99", tags="dyn")
         c.create_rectangle(bx + 65, HEIGHT - 25, bx + 65 + 63 * self.steer_now, HEIGHT - 15, fill="#ffd84d", outline="", tags="dyn")
+        if self.voice:
+            self._voice_hud()
         if not g.started:
-            c.create_text(cx, cy + 150, text="Tap the pendant to start", fill="white", font=("Helvetica", 24, "bold"), tags="dyn")
-            c.create_text(cx, cy + 184, fill="#c9d4ff", font=("Helvetica", 14), tags="dyn",
-                          text="fly the ball through the glowing gaps  ·  tilt or ← → to steer")
+            title, hint = (
+                ("Tap the pendant to unmute, then say “go up”", "say go left · go right · go up · go down · stop")
+                if self.voice
+                else ("Tap the pendant to start", "fly the ball through the glowing gaps  ·  tilt or ← → to steer")
+            )
+            c.create_text(cx, cy + 150, text=title, fill="white", font=("Helvetica", 24, "bold"), tags="dyn")
+            c.create_text(cx, cy + 184, fill="#c9d4ff", font=("Helvetica", 14), tags="dyn", text=hint)
         elif not g.alive:
             c.create_rectangle(0, 0, WIDTH, HEIGHT, fill="#b3261e", stipple="gray25", outline="", tags="dyn")
             c.create_text(cx, cy - 110, text="Crashed", fill="white", font=("Helvetica", 34, "bold"), tags="dyn")
-            c.create_text(cx, cy - 72, text=f"score {g.score}  ·  best {g.best}  ·  tap to retry", fill="white",
+            retry = "say a command to retry" if self.voice else "tap to retry"
+            c.create_text(cx, cy - 72, text=f"score {g.score}  ·  best {g.best}  ·  {retry}", fill="white",
                           font=("Helvetica", 16), tags="dyn")
+
+    def _voice_hud(self) -> None:
+        c = self.canvas
+        listening, heard = self.voice_status()
+        badge, colour = ("● LISTENING", "#3ddc84") if listening else ("MUTED · tap pendant", "#ff6b6b")
+        c.create_rectangle(14, 14, 214, 44, fill="#0a0f22", outline=colour, width=2, tags="dyn")
+        c.create_text(114, 29, text=badge, fill=colour, font=("Helvetica", 14, "bold"), tags="dyn")
+        if heard:
+            c.create_text(14, 62, anchor="w", text=f"heard: {heard}", fill="#c9d4ff", font=("Helvetica", 13), tags="dyn")
+        word, at = self.last_command
+        age = self.clock - at
+        if word and age < 0.7:
+            fade = _mix((255, 216, 77), SKY_HORIZON, age / 0.7)
+            cx, cy = WIDTH / 2, HEIGHT / 2 - 150
+            arrows = {"left": "◀", "right": "▶", "up": "▲", "down": "▼", "stop": "■"}
+            c.create_text(cx, cy, text=arrows.get(word, word), fill=fade, font=("Helvetica", 64, "bold"), tags="dyn")
+            c.create_text(cx, cy + 50, text=word.upper(), fill=fade, font=("Helvetica", 18, "bold"), tags="dyn")
 
     def _draw(self) -> None:
         c, g = self.canvas, self.game

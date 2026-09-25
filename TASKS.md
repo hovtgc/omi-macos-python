@@ -8,4 +8,5 @@ Do the first unchecked item only. Leave `sh scripts/test.sh` green. Stop.
 - [x] Add optional WAV capture (`sideband hold --wav session.wav`) behind an `audio` extra. Decode only after `strip_packet`. No network transcription.
 - [x] Build stock firmware with nRF Connect SDK 2.9.0 for `omi/nrf5340/cpuapp` and confirm the build is reproducible before changing anything.
 - [x] Apply `firmware/accel-stream.patch`, build, and review the diff. Do not flash without the owner's explicit yes.
-- [ ] Rehearse OTA with the official `Omi_CV1_OTA_v3.0.21.zip` over SMP from the Mac, then flash the motion build. Confirm `32403791` notifies 12 bytes at about 50 Hz and that tilt steers Omi Flap 3D.
+- [x] Rehearse OTA with the official `Omi_CV1_OTA_v3.0.21.zip` over SMP from the Mac, then flash the motion build. Confirm `32403791` notifies 12 bytes at about 50 Hz and that tilt steers Omi Flap 3D.
+- [ ] Play Omi Voice Flap on the pendant mic for 2 minutes. Note how many spoken commands were missed or misheard and the typical delay. Do not widen the grammar to force a pass.
