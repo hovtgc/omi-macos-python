@@ -41,7 +41,6 @@ class ControlsWindow:
         self.apps = installed_apps(APP_FOLDERS)
         self.shortcuts: list[str] = []
         self.presses = 0
-        self.state_changes = 0
         self.fired = {g: 0 for g in GESTURES}
         self.recording_for: str | None = None
         self._build()
@@ -95,7 +94,7 @@ class ControlsWindow:
         ttk.Label(frame, textvariable=self.mic_info, foreground="#888").grid(row=8, column=0, columnspan=2, sticky="w")
 
         ttk.Separator(frame).grid(row=9, column=0, columnspan=2, sticky="ew", pady=10)
-        self.state_info = tk.StringVar(value="device state —")
+        self.state_info = tk.StringVar(value="charging —")
         ttk.Label(frame, textvariable=self.state_info, foreground="#888").grid(row=10, column=0, columnspan=2, sticky="w")
         self.motion_info = tk.StringVar(value="Motion: waiting for the pendant (stock firmware does not stream it)")
         ttk.Label(frame, textvariable=self.motion_info, wraplength=330).grid(row=11, column=0, columnspan=2, sticky="w", pady=(10, 0))
@@ -231,9 +230,8 @@ class ControlsWindow:
         tile.configure(text=f"{gesture}\n{self.fired[gesture]}", bg=ACCENT, fg="white")
         self.top.after(FLASH_MS * 2, lambda: tile.configure(bg=IDLE, fg="#1d1d1f"))
 
-    def on_state(self, raw: bytes) -> None:
-        self.state_changes += 1
-        self.state_info.set(f"device state {raw.hex()} · changes {self.state_changes}")
+    def on_charging(self, charging: bool | None) -> None:
+        self.state_info.set({True: "⚡ charging", False: "not charging", None: "charging —"}[charging])
 
     def on_motion(self, sample: Motion, tilt: float, count: int) -> None:
         if count % 5 == 0:

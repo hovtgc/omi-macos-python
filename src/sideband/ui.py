@@ -27,11 +27,13 @@ from sideband.audio import AudioUnavailable, WavSink, decoder_for, file_to_wav
 from sideband.game import GameWindow
 from sideband.inputs import (
     BUTTON_UUID,
-    DEVICE_STATE_UUID,
+    CHARGING_UUID,
     STORAGE_UUID,
     ButtonDecoder,
     InputMap,
+    battery_text,
     button_code,
+    charging_from,
     button_kind,
     input_name,
 )
@@ -248,6 +250,8 @@ class Hub:
         self.arcade = None
         self.bluetooth = None
         self.stream_rate: float | None = None
+        self.battery_level: int | None = None
+        self.charging: bool | None = None
         self.game = None  # the open game window: Flap, Voice Flap or a mini game
         self.game_name = ""
         self.menu_voice: VoiceListener | None = None
@@ -895,10 +899,17 @@ class Hub:
             elif uuid == MOTION_UUID:
                 self._on_motion(raw, at)
             elif uuid == BATTERY_LEVEL_UUID:
-                self.battery.set(f"battery {raw[0]}%" if raw else "battery —")
-            elif uuid == DEVICE_STATE_UUID:
+                self.battery_level = raw[0] if raw else None
+                self.battery.set(battery_text(self.battery_level, self.charging))
+            elif uuid == CHARGING_UUID:
+                charging = charging_from(raw)
+                if charging is not None and charging != self.charging:
+                    if self.charging is not None or charging:
+                        self.log("pendant plugged in: charging" if charging else "pendant unplugged")
+                    self.charging = charging
+                self.battery.set(battery_text(self.battery_level, self.charging))
                 if self.controls is not None:
-                    self.controls.on_state(raw)
+                    self.controls.on_charging(self.charging)
             elif uuid != STORAGE_UUID:
                 self.log(f"{input_name(uuid):8} {raw.hex()}")
 

@@ -65,13 +65,13 @@ class BluetoothWindow:
         info.grid(row=1, column=0, sticky="ew", pady=(12, 0))
         info.columnconfigure(1, weight=1)
         self.fields: dict[str, tk.StringVar] = {}
-        for i, name in enumerate(("Device", "Status", "Connected for", "Attempts", "Last error", "Battery", "Audio stream", "Motion")):
+        for i, name in enumerate(("Device", "Status", "Connected for", "Attempts", "Last error", "Battery", "Charging", "Audio stream", "Motion")):
             ttk.Label(info, text=name, foreground=GREY).grid(row=i // 2, column=(i % 2) * 2, sticky="w", padx=(0, 8))
             var = tk.StringVar(value="—")
             ttk.Label(info, textvariable=var).grid(row=i // 2, column=(i % 2) * 2 + 1, sticky="w", padx=(0, 20))
             self.fields[name] = var
         buttons = ttk.Frame(info)
-        buttons.grid(row=4, column=0, columnspan=4, sticky="w", pady=(10, 0))
+        buttons.grid(row=5, column=0, columnspan=4, sticky="w", pady=(10, 0))
         for label, command in (
             ("Reconnect now", self.hub.radio.reconnect),
             ("Pause", self.hub.radio.pause),
@@ -190,7 +190,8 @@ class BluetoothWindow:
         self.fields["Connected for"].set(since)
         self.fields["Attempts"].set(str(radio.attempts))
         self.fields["Last error"].set(radio.last_error or "none")
-        self.fields["Battery"].set(hub.battery.get().replace("battery ", ""))
+        self.fields["Battery"].set("—" if hub.battery_level is None else f"{hub.battery_level}%")
+        self.fields["Charging"].set({True: "yes ⚡", False: "no", None: "—"}[hub.charging])
         self.fields["Audio stream"].set("—" if frames is None else f"{frames:.0f} frames/s")
         self.fields["Motion"].set("streaming" if hub.latest_motion() is not None else "none (stock firmware, or asleep)")
 

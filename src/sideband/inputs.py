@@ -21,7 +21,8 @@ from pathlib import Path
 from sideband.protocol import AUDIO_DATA_UUID, BATTERY_LEVEL_UUID
 
 BUTTON_UUID = "23ba7925-0000-1000-7450-346eac492e92"
-DEVICE_STATE_UUID = "19b10013-e8f2-537e-4f6c-d104768a1214"
+# Settings service: 1 while the pendant is on its charger, 0 otherwise; notified on subscribe and on change.
+CHARGING_UUID = "19b10013-e8f2-537e-4f6c-d104768a1214"
 STORAGE_UUID = "30295782-4301-eabd-2904-2849adfeae43"
 STORAGE_CONTROL_UUID = "30295781-4301-eabd-2904-2849adfeae43"
 SMP_UUID = "da2e7828-fbce-4e01-ae9e-261174997c48"
@@ -30,7 +31,7 @@ INPUTS = {
     BUTTON_UUID: "button",
     AUDIO_DATA_UUID: "microphone",
     BATTERY_LEVEL_UUID: "battery",
-    DEVICE_STATE_UUID: "device state",
+    CHARGING_UUID: "charging",
     STORAGE_UUID: "storage",
     STORAGE_CONTROL_UUID: "storage control",
     SMP_UUID: "firmware (SMP)",
@@ -44,6 +45,17 @@ TAP_ECHO_S = 0.6  # a release this soon after a tap belongs to that tap
 
 def input_name(uuid: str) -> str:
     return INPUTS.get(uuid.lower(), uuid[:8])
+
+
+def charging_from(raw: bytes) -> bool | None:
+    """The charging flag from characteristic 19b10013, or None when unread."""
+    return bool(raw[0]) if raw else None
+
+
+def battery_text(level: int | None, charging: bool | None) -> str:
+    """"battery 76%", with "⚡ charging" while it is on the charger."""
+    text = "battery —" if level is None else f"battery {level}%"
+    return f"{text} ⚡ charging" if charging else text
 
 
 def button_code(raw: bytes) -> int | None:

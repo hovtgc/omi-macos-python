@@ -134,7 +134,8 @@ def pendant_lines(facts: dict[str, bytes]) -> list[str]:
     lines = [
         "Pendant",
         f"  ✓ {text.get('model', '?')} · firmware {text.get('firmware', '?')} · hardware {text.get('hardware', '?')}",
-        f"  · battery {facts['battery'][0]}%" if facts.get("battery") else "  · battery unread",
+        (f"  · battery {facts['battery'][0]}%" if facts.get("battery") else "  · battery unread")
+        + (" · ⚡ charging" if facts.get("charging", b"\x00")[:1] == b"\x01" else ""),
         f"  · features: {', '.join(have) or 'unread'}",
     ]
     if motion:
