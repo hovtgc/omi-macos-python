@@ -104,6 +104,8 @@ class ButtonDecoder:
 ACTIONS = {
     # name: hint for the argument, "" when it takes none
     "none": "",
+    "record": "start / stop a recording, transcribed on this Mac (audio kept 24 h)",
+    "voice menu": "listen 5 s for a spoken command: open arcade, play marble, start recording…",
     "microphone": "toggle the live pendant mic (level only, nothing recorded)",
     "open app": "app to open or switch to",
     "notify": "notification text",

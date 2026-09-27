@@ -1,52 +1,74 @@
-# Sideband: an Omi pendant on your Mac
+# Sideband: your Omi pendant, on your Mac
 
-A Python Mac app for the [Omi](https://github.com/BasedHardware/omi) pendant. It:
+**Tap your [Omi](https://github.com/BasedHardware/omi) to record. Your Mac transcribes it, summarizes it, pulls out the action items, and answers questions about everything you've said. Nothing leaves your Mac.**
 
-- holds the pendant's Bluetooth link in the background and reconnects after drops,
-- maps single and double taps to Mac actions: open or switch apps, keystrokes, Shortcuts, URLs, volume, notifications, AppleScript, shell,
-- shows every live input (button, mic stream, battery, device state) in one window,
-- includes **Omi Flap 3D**, a first-person tap-to-flap game that steers with pendant tilt once the firmware streams motion (arrow keys until then).
-- includes **Omi Voice Flap**: the same game driven by voice. Tap the pendant to unmute, then say "go left / right / up / down / stop". Speech is recognised on the Mac with Vosk and a small offline English model; nothing is recorded or uploaded.
+Sideband is a Python Mac app that turns an Omi pendant into a Mac companion:
 
-Audio never leaves the Mac, and nothing is recorded unless you ask for a WAV. MIT licensed. This is not the Omi phone app.
+| | App | What it does |
+|---|---|---|
+| 🎙 | **Transcriber** | Tap to record (or pick any audio file). Whisper transcribes it on the Mac; a local LLM adds a summary and action items and answers questions about one recording or all of them. Audio deletes itself after 24 hours; transcripts stay. |
+| 🎛 | **Controls** | Map single / double / triple / hold taps to Mac actions: open apps, keystrokes, Shortcuts, URLs, volume, record, voice menu, AppleScript, shell. |
+| 🗣 | **Voice menu** | Press ⌘L or tap, then say "start recording", "summarize that", "open arcade", "close". |
+| 🕹 | **Arcade** | Omi Flap 3D (tap to flap, tilt to steer), Voice Flap ("go left"), Marble Maze, Star Dodger, Omi Catch. |
+| 📶 | **Bluetooth** | Connect, scan, switch pendants, and see what the link is doing. |
 
-## Setup
+It runs Whisper large-v3-turbo, Qwen2.5-7B (MLX) and Vosk locally. There is no account, no cloud, and no telemetry. MIT licensed. Not affiliated with Based Hardware; this is not the Omi phone app.
 
-```sh
-python3 -m venv .venv            # Python 3.10+
-.venv/bin/pip install -e '.[audio,firmware,voice]'
-sh scripts/test.sh
-.venv/bin/sideband build-app     # ~/Applications/Sideband.app, holds the Bluetooth permission
-.venv/bin/sideband --via-app scan
-.venv/bin/sideband --via-app ui
-```
+## Quick start: let your agent do it
 
-Wake the pendant and keep it next to the Mac. macOS asks once for Bluetooth for **Sideband**. For keystroke actions, turn Sideband on in System Settings → Privacy & Security → Accessibility (the window has a button for it).
+Clone the repo, open the folder in **Claude Code** or **Codex**, and say:
 
-Why the app wrapper: macOS gives Bluetooth to the app that launched a process. Python started from an IDE, an agent, or launchd has no such app and is killed silently. `Sideband.app` is a tiny signed-ad-hoc bundle that carries the permission and runs this venv's Python.
+> **Set me up.**
 
-Voice Flap needs the Vosk English model once (~40 MB, from the Vosk project):
+The agent follows [ONBOARDING.md](ONBOARDING.md): it installs everything with one script, checks each step, and stops when it needs you (allowing Bluetooth, tapping the pendant). You'll be transcribing in about 15 minutes, most of it the one-time model download.
+
+## Quick start: by hand
 
 ```sh
-mkdir -p ~/Library/Application\ Support/Sideband/models && cd "$_" \
-  && curl -LO https://alphacephei.com/vosk/models/vosk-model-small-en-us-0.15.zip \
-  && unzip -q vosk-model-small-en-us-0.15.zip && rm vosk-model-small-en-us-0.15.zip
+git clone https://github.com/hovtgc/omi-macos-python.git && cd omi-macos-python
+sh scripts/setup.sh                # Python 3.12 via uv, packages, tests, Sideband.app, models (~6 GB)
+.venv/bin/sideband open launcher   # then allow Bluetooth when macOS asks
 ```
 
-## Run in the background
+Tap the pendant to wake it; the launcher connects on its own. Open the **Transcriber** (⌘1), click the red button, talk, click again. Next time, double-click **Sideband** in `~/Applications` or find it in Spotlight.
+
+`.venv/bin/sideband doctor` tells you what's ready and what to do next.
+
+## Requirements
+
+- An **Omi pendant**. Motion (tilt games) needs the Omi CV 1 and the optional motion firmware; everything else works on stock firmware.
+- A **Mac with Apple silicon** (M1 or later) on **macOS 13+** for the transcriber and assistant (MLX). On Intel Macs, Bluetooth, Controls and the Arcade still work.
+- About **8 GB** free disk for the models.
+
+## Motion firmware (optional)
+
+Stock Omi firmware leaves the pendant's 6-axis sensor off. Sideband ships a small firmware patch that streams it for tilt and shake, as a prebuilt, checksum-pinned release plus the source. Installing it is optional, needs your explicit yes, and the pendant has **no rollback**, so read [ONBOARDING.md step 7](ONBOARDING.md#7-optional-motion-firmware-for-tilt-games-omi-cv-1-only) first. Details: [firmware/README.md](firmware/README.md).
+
+## How it fits together
+
+```
+Omi pendant ──Bluetooth──▶ Sideband.app (holds the permission)
+                              └─ launcher: one connection shared by the apps
+                                   ├─ recorder → Whisper → transcript.md → local LLM → summary / answers
+                                   ├─ taps → your Mac actions      ├─ voice menu (Vosk)
+                                   └─ Arcade (taps, tilt, shake)   └─ Bluetooth tools
+```
+
+Why an app wrapper? macOS only gives Bluetooth to the app that started a process, so Python run from a terminal, IDE or agent is killed silently. `Sideband.app` is a tiny ad-hoc-signed bundle that holds the permission and runs this repo's Python.
+
+## Commands
 
 ```sh
-.venv/bin/sideband install --address <id-from-scan>
-.venv/bin/sideband status
-.venv/bin/sideband uninstall
+sideband open launcher|transcriber|controls|arcade|bluetooth   # reuses a running launcher
+sideband doctor [--pendant]                                   # checks and next steps
+sideband models --download
+sideband --via-app scan                                       # radio commands from a shell go through the app
+sideband firmware --install official|motion [--yes-flash]
+sideband install --address <id>                               # keep the link alive at login
 ```
 
-## Buttons
+`sideband open …` works from Shortcuts, Raycast and Alfred too. Inside the app, the **Apps** menu has ⌘1–⌘4.
 
-The pendant detects gestures itself: a single tap arrives about 300 ms after the press, and a double tap uses a 600 ms window. **Holding for 3 s powers the pendant off**, so it can't be mapped.
+## Contributing
 
-## Motion
-
-The pendant has an LSM6DS3TR-C 6-axis IMU, but stock firmware compiles motion out. `firmware/accel-stream.patch` enables a 50 Hz stream; `NOTES.md` records what has been verified. The bootloader has no rollback, so a crashing build needs a debug probe to recover.
-
-Agents: read `AGENTS.md` (Claude Code also reads `CLAUDE.md`) and do the first unchecked item in `TASKS.md`.
+Read [AGENTS.md](AGENTS.md) (the contract for people and coding agents), then [TASKS.md](TASKS.md). `sh scripts/test.sh` must stay green; tests need no pendant. [NOTES.md](NOTES.md) records what was verified on real hardware.

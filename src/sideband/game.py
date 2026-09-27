@@ -223,6 +223,12 @@ class GameWindow:
         self.game.flap(strength)
         self.flash = 8
 
+    def on_tap(self, kind: str) -> None:
+        self.flap(BOOST if kind == "double" else 1.0)
+
+    def on_shake(self) -> None:
+        pass
+
     def command(self, word: str) -> None:
         """A spoken (or arrow-key) command in voice mode."""
         self.game.command(word)

@@ -1,7 +1,7 @@
 import unittest
 
 from sideband.game import CEIL, NUDGE_S, Flight
-from sideband.voice import CommandSpotter
+from sideband.voice import CommandSpotter, MenuSpotter, menu_command
 
 
 class SpotterTest(unittest.TestCase):
@@ -20,6 +20,44 @@ class SpotterTest(unittest.TestCase):
 
     def test_ignores_non_commands(self) -> None:
         self.assertEqual(CommandSpotter().final("[unk] go"), [])
+
+
+class MenuTest(unittest.TestCase):
+    def test_phrases(self) -> None:
+        cases = {
+            "open the arcade": "open:arcade",
+            "open transcriber": "open:transcriber",
+            "bluetooth": "open:bluetooth",
+            "play marble": "play:marble",
+            "play the maze": "play:marble",
+            "play star dodger": "play:dodger",
+            "play voice flap": "play:voice",
+            "play flap": "play:flap",
+            "start recording": "record:start",
+            "stop recording": "record:stop",
+            "record": "record:toggle",
+            "close": "close",
+            "go home": "home",
+            "show launcher": "home",
+            "cancel": "cancel",
+            "summarize that": "summarize",
+            "summarize last recording": "summarize",
+            "summary": "summarize",
+        }
+        for said, command in cases.items():
+            self.assertEqual(menu_command(said), command, said)
+
+    def test_incomplete_or_unrelated_speech_does_nothing(self) -> None:
+        for said in ("", "open", "play", "play voice", "start", "[unk] the", "hello there"):
+            self.assertIsNone(menu_command(said), said)
+
+    def test_spotter_fires_once_per_utterance(self) -> None:
+        spot = MenuSpotter()
+        self.assertEqual(spot.partial("open"), [])
+        self.assertEqual(spot.partial("open arcade"), ["open:arcade"])
+        self.assertEqual(spot.partial("open arcade please"), [])
+        self.assertEqual(spot.final("open arcade"), [])
+        self.assertEqual(spot.final("play catch"), ["play:catch"])  # next utterance
 
 
 class VoiceFlightTest(unittest.TestCase):

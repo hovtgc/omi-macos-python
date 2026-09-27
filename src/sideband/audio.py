@@ -5,6 +5,8 @@ PCM codecs need only the standard library. Opus needs the `audio` extra (PyAV).
 
 from __future__ import annotations
 
+import array
+import math
 import threading
 import wave
 from pathlib import Path
@@ -56,6 +58,7 @@ class WavSink:
         self.path = path
         self.frames = 0
         self.bad = 0
+        self.level_db = -90.0  # loudness of the latest frame, for a meter
         self._samples = 0
         self._decoder: _Pcm | _Opus | None = None
         self._wav: wave.Wave_write | None = None
@@ -85,6 +88,10 @@ class WavSink:
             self._wav.writeframes(pcm)
             self.frames += 1
             self._samples += len(pcm) // 2
+            samples = array.array("h", pcm)
+            if samples:
+                rms = math.sqrt(sum(v * v for v in samples) / len(samples))
+                self.level_db = 20 * math.log10(max(rms, 1.0) / 32768)
 
     def seconds(self) -> float:
         with self._lock:
@@ -95,3 +102,28 @@ class WavSink:
             if self._wav is not None:
                 self._wav.close()
                 self._wav = None
+
+
+def file_to_wav(source: Path, target: Path) -> float:
+    """Decode any audio or video file PyAV can read to 16 kHz mono 16-bit WAV. Returns seconds."""
+    try:
+        import av
+    except ImportError as exc:
+        raise AudioUnavailable("importing audio files needs the audio extra: pip install -e '.[audio]'") from exc
+    samples = 0
+    with av.open(str(source)) as container, wave.open(str(target), "wb") as out:
+        out.setnchannels(1)
+        out.setsampwidth(2)
+        out.setframerate(PCM_RATE_HZ)
+        stream = next((s for s in container.streams if s.type == "audio"), None)
+        if stream is None:
+            raise AudioUnavailable(f"{source.name} has no audio track")
+        resampler = av.AudioResampler(format="s16", layout="mono", rate=PCM_RATE_HZ)
+        for frame in container.decode(stream):
+            for pcm in resampler.resample(frame):
+                out.writeframes(bytes(pcm.planes[0])[: pcm.samples * 2])
+                samples += pcm.samples
+        for pcm in resampler.resample(None):
+            out.writeframes(bytes(pcm.planes[0])[: pcm.samples * 2])
+            samples += pcm.samples
+    return samples / PCM_RATE_HZ

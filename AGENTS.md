@@ -1,14 +1,21 @@
 # Sideband
 
-Python app for a Mac. It keeps an Omi pendant's Bluetooth link alive in the background, maps the pendant's button to Mac actions, and ships a tap-and-tilt demo game.
+A Mac app, in Python, that turns an Omi pendant into a Mac companion: tap-to-record transcription with a local AI assistant, tap / tilt / voice controls for the Mac, and a small arcade. Everything runs on the Mac.
 
 You are a coding agent (Codex, Claude Code, or similar). Work only inside this directory. Ignore any parent folder.
+
+## First: what does the user want?
+
+- **Set it up, or use it** ("set me up", "get this running", "install", "start the transcriber", "play the game", "flash the motion firmware"): follow **[ONBOARDING.md](ONBOARDING.md)** step by step. Do not open `TASKS.md`. Stop at the 🧑 steps and wait for the user. Start with `sh scripts/setup.sh` and `.venv/bin/sideband doctor`.
+- **Change the code:** read the rest of this file, then `TASKS.md`.
+
+Never flash firmware without the user's explicit yes in chat, asked again before each flash. Never run radio commands bare from your shell; use `--via-app` or `sideband open` (see Bluetooth permission).
 
 This stays a Python application. Do not rewrite it in Swift, JavaScript, or as a web UI. The window is tkinter.
 
 ## Product
 
-The official phone app drops the pendant when it leaves the foreground. This process is the countermeasure. Audio frames are counted locally. Nothing is uploaded. There is no account.
+Transcriber first: tap to record, Whisper transcribes on the Mac, a local LLM (Qwen2.5-7B via MLX) writes summaries and action items and answers questions. Then Controls (taps → Mac actions), a voice menu, the Arcade, and a Bluetooth tool. It also holds the pendant's link in the background, which the official phone app drops when it leaves the foreground. Nothing is uploaded. There is no account.
 
 USB does not carry audio. Do not add a USB transport.
 
@@ -21,6 +28,7 @@ USB does not carry audio. Do not add a USB transport.
 - `radio.py` is the only module allowed to import `bleak` or `smpclient`.
 - Button gestures come from the firmware's codes (`inputs.BUTTON_CODES`). Do not re-derive them from timing. A 3 s hold powers the pendant off and cannot be mapped.
 - Tests must pass with no pendant and no Bluetooth adapter.
+- Keep models local: Whisper, the assistant LLM and Vosk run on the Mac. Do not add cloud transcription or cloud LLMs without the owner asking.
 - Do not add Deepgram, Firebase, accounts, or network transcription. Nothing is recorded unless the user passes `--wav`. Voice commands use offline Vosk with a fixed command grammar; audio is dropped after recognition.
 - Never flash firmware without the owner's explicit yes in chat. The bootloader has no rollback.
 
@@ -37,8 +45,12 @@ macOS charges Bluetooth to the app that launched the process. Python started fro
 ## Commands
 
 ```sh
+sh scripts/setup.sh                                      # everything, once; safe to rerun
 sh scripts/test.sh
-python3 -m venv .venv && .venv/bin/pip install -e '.[audio,firmware,voice]'
+.venv/bin/sideband doctor [--pendant]                    # what is ready and the next step
+.venv/bin/sideband open launcher|transcriber|controls|arcade|bluetooth
+.venv/bin/sideband models --download
+.venv/bin/sideband firmware --install official|motion    # dry run; --yes-flash to install
 .venv/bin/sideband protocol
 .venv/bin/sideband --via-app scan
 .venv/bin/sideband --via-app services --address <id>
@@ -67,11 +79,23 @@ A connected pendant stops advertising. Close the window before `firmware` or `sc
 | `src/sideband/audio.py` | Optional WAV capture (PyAV for Opus). |
 | `src/sideband/bundle.py` | Sideband.app and LaunchAgent builders. |
 | `src/sideband/radio.py` | bleak and SMP sessions. |
-| `src/sideband/ui.py` | tkinter input explorer. |
+| `src/sideband/ui.py` | Launcher (`Hub`): the pendant connection, gesture actions, recorder, transcriber, assistant, voice menu, 24 h audio limit. |
+| `src/sideband/transcriber_app.py` | Transcriber window: record, read, summarize, ask. |
+| `src/sideband/controls.py` | Controls window: live inputs and the gesture map. |
+| `src/sideband/arcade.py` | Arcade menu, tilt wizard, mini game renderers. |
+| `src/sideband/minigames.py` | Marble Maze, Star Dodger, Omi Catch. Pure. |
+| `src/sideband/bluetooth_app.py` | Bluetooth window: scan, switch, reconnect, debug. |
+| `src/sideband/recordings.py` | Recording files, transcripts, the 24 h audio limit. Pure. |
+| `src/sideband/transcribe.py` | Whisper worker (mlx-whisper). |
+| `src/sideband/llm.py` | Local LLM: prompts, context, summaries (pure) and the MLX worker. |
+| `src/sideband/doctor.py` | `sideband doctor`: setup checks and next steps. |
 | `src/sideband/log.py` | stdout plus an optional file. |
+| `ONBOARDING.md` | Setup playbook for users and their agents. |
+| `scripts/setup.sh` | One-command install. |
+| `firmware/README.md` | What the motion patch changes, the release, building it yourself. |
 | `firmware/accel-stream.patch` | Upstream firmware patch that streams the IMU at 50 Hz. |
 | `tests/` | Unit tests. No radio required. |
-| `TASKS.md` | Do the first unchecked item, then stop. |
+| `TASKS.md` | Development work: do the first unchecked item, then stop. Not for setup. |
 | `NOTES.md` | Run notes from a real pendant. Append, never delete. |
 
 ## How to change the code

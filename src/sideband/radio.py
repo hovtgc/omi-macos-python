@@ -44,6 +44,40 @@ async def scan(timeout: float = 6.0) -> list[tuple[str, str]]:
     return rows
 
 
+async def scan_all(timeout: float = 8.0) -> list[tuple[str, str, int]]:
+    """Every advertising device: (name, address, RSSI dBm), strongest first. A connected pendant does not advertise."""
+    from bleak import BleakScanner
+
+    found = await BleakScanner.discover(timeout=timeout, return_adv=True)
+    rows = [(device.name or adv.local_name or "", device.address, adv.rssi) for device, adv in found.values()]
+    return sorted(rows, key=lambda row: row[2], reverse=True)
+
+
+FACT_UUIDS = {
+    "model": "00002a24-0000-1000-8000-00805f9b34fb",
+    "firmware": "00002a26-0000-1000-8000-00805f9b34fb",
+    "hardware": "00002a27-0000-1000-8000-00805f9b34fb",
+    "battery": BATTERY_LEVEL_UUID,
+    "features": "19b10021-e8f2-537e-4f6c-d104768a1214",
+}
+MOTION_SERVICE = "32403790-0000-1000-7450-bf445e5829a2"
+
+
+async def pendant_facts(address: str) -> dict[str, bytes]:
+    """Model, firmware and hardware strings, battery, feature bits, and whether motion is served."""
+    from bleak import BleakClient
+
+    facts: dict[str, bytes] = {}
+    async with BleakClient(address, timeout=20.0) as client:
+        for name, uuid in FACT_UUIDS.items():
+            try:
+                facts[name] = bytes(await client.read_gatt_char(uuid))
+            except Exception:
+                pass
+        facts["motion_service"] = b"1" if any(s.uuid == MOTION_SERVICE for s in client.services) else b""
+    return facts
+
+
 async def services(address: str) -> list[str]:
     """One line per service and characteristic, with properties and a readable value when allowed."""
     from bleak import BleakClient
