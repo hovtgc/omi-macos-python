@@ -62,6 +62,41 @@ def read_image(data: bytes) -> tuple[str, bytes]:
     return f"{major}.{minor}.{revision}+{build}", digest
 
 
+# Pinned downloads for `sideband firmware --install`. The checksum is checked before anything is
+# read, so a changed or corrupted file is refused.
+RELEASES = {
+    "official": (
+        "https://github.com/BasedHardware/omi/releases/download/Omi_CV1_v3.0.21/Omi_CV1_OTA_v3.0.21.zip",
+        "9fb93885e4d31b0836ed1d1047c9fde32b8fb477f94cd9d222246254492d3674",
+        "Omi's official 3.0.21 release (stock, no motion). Use it to rehearse an update, or to go back to stock.",
+    ),
+    "motion": (
+        "https://github.com/hovtgc/omi-macos-python/releases/download/motion-firmware-3.0.21.1/Sideband_Omi_CV1_motion_3.0.21.1.zip",
+        "3ca5f664cc970844ac71c90905374dcc5b079a972bdcfab9fd1e89786d7d0df3",
+        "3.0.21 plus firmware/accel-stream.patch: streams the 6-axis sensor at about 50 Hz for tilt and shake.",
+    ),
+}
+
+
+def fetch_release(name: str, folder: Path) -> Path:
+    """Download a pinned firmware release (once) and verify its SHA-256."""
+    import hashlib
+    import urllib.request
+
+    url, sha256, _about = RELEASES[name]
+    folder.mkdir(parents=True, exist_ok=True)
+    path = folder / url.rsplit("/", 1)[-1]
+    if not path.exists() or hashlib.sha256(path.read_bytes()).hexdigest() != sha256:
+        tmp = path.with_suffix(".part")
+        urllib.request.urlretrieve(url, tmp)
+        tmp.replace(path)
+    got = hashlib.sha256(path.read_bytes()).hexdigest()
+    if got != sha256:
+        path.unlink(missing_ok=True)
+        raise FirmwareError(f"{path.name}: checksum {got[:12]}… does not match the pinned {sha256[:12]}…; refusing")
+    return path
+
+
 def read_package(path: Path) -> list[Image]:
     """Images in an OTA zip, ordered by image index. Refuses anything not built for the Omi nRF5340."""
     try:

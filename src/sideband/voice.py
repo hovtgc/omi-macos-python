@@ -1,9 +1,10 @@
-"""Voice commands for Omi Flap 3D: "go left / right / up / down". Local only, nothing recorded.
+"""Voice commands. Local only, nothing recorded.
 
-Vosk (the `voice` extra) runs with a grammar of just the command words, so it answers fast and
-does not turn random speech into commands. PCM from the pendant (16 kHz mono s16) goes in; command
-words come out. `CommandSpotter` is the pure part: it turns Vosk's partial and final word lists
-into commands, each spoken word firing once.
+Two vocabularies: the Voice Flap game ("go left / right / up / down / stop") and the launcher's
+voice menu ("open arcade", "play marble", "start recording", "close", …). Vosk (the `voice` extra)
+runs with a grammar of just those words, so it answers fast and does not turn random speech into
+commands. PCM from the pendant (16 kHz mono s16) goes in; commands come out. `CommandSpotter`,
+`menu_command` and `MenuSpotter` are the pure parts.
 """
 
 from __future__ import annotations
@@ -46,6 +47,66 @@ class CommandSpotter:
         return new
 
 
+MENU_WORDS = [
+    "open", "play", "show", "start", "stop", "close", "cancel", "home", "launcher", "the",
+    "recording", "record", "transcriber", "controls", "arcade", "bluetooth",
+    "voice", "flap", "marble", "maze", "star", "dodger", "catch",
+    "summarize", "summarise", "summary", "that", "last", "latest", "[unk]",
+]
+APPS = {"transcriber": "transcriber", "controls": "controls", "arcade": "arcade", "bluetooth": "bluetooth"}
+GAMES = {"marble": "marble", "maze": "marble", "star": "dodger", "dodger": "dodger", "catch": "catch", "flap": "flap"}
+
+
+def menu_command(text: str) -> str | None:
+    """A spoken menu phrase as `open:<app>`, `play:<game>`, `record:start|stop|toggle`, `summarize`,
+    `close`, `home` or `cancel`. None until the phrase names something."""
+    words = [w for w in text.lower().split() if w not in ("the", "[unk]")]
+    if not words:
+        return None
+    said = set(words)
+    if "cancel" in said:
+        return "cancel"
+    if said & {"summarize", "summarise", "summary"}:  # before record: "summarize last recording"
+        return "summarize"
+    if said & {"recording", "record"}:
+        if "stop" in said:
+            return "record:stop"
+        if "start" in said:
+            return "record:start"
+        return "record:toggle"
+    if "close" in said:
+        return "close"
+    if "home" in said or "launcher" in said:
+        return "home"
+    if "voice" in said and "flap" in said:
+        return "play:voice"
+    for word in words:
+        if word in APPS:
+            return f"open:{APPS[word]}"
+        if word in GAMES:
+            return f"play:{GAMES[word]}"
+    return None
+
+
+@dataclass
+class MenuSpotter:
+    """Fires one menu command per utterance, as soon as the partial result names one."""
+
+    fired: bool = False
+
+    def partial(self, text: str) -> list[str]:
+        command = None if self.fired else menu_command(text)
+        if command:
+            self.fired = True
+            return [command]
+        return []
+
+    def final(self, text: str) -> list[str]:
+        out = self.partial(text)
+        self.fired = False
+        return out
+
+
 def model_path(support_dir: Path) -> Path:
     return support_dir / "models" / MODEL_NAME
 
@@ -53,12 +114,20 @@ def model_path(support_dir: Path) -> Path:
 class VoiceListener(threading.Thread):
     """Feed PCM with `feed`; `on_command(word)` and `on_text(text)` are called from this thread."""
 
-    def __init__(self, model_dir: Path, on_command: Callable[[str], None], on_text: Callable[[str], None]) -> None:
+    def __init__(
+        self,
+        model_dir: Path,
+        on_command: Callable[[str], None],
+        on_text: Callable[[str], None],
+        menu: bool = False,
+    ) -> None:
         super().__init__(daemon=True)
         self.model_dir = model_dir
         self.on_command = on_command
         self.on_text = on_text
-        self.spotter = CommandSpotter()
+        self.grammar = MENU_WORDS if menu else GRAMMAR
+        self.make_spotter = MenuSpotter if menu else CommandSpotter
+        self.spotter = self.make_spotter()
         self._audio: queue.Queue[bytes | None] = queue.Queue(maxsize=200)
         self.error: str | None = None
 
@@ -83,7 +152,7 @@ class VoiceListener(threading.Thread):
             self.on_text(self.error)
             return
         vosk.SetLogLevel(-1)
-        recognizer = vosk.KaldiRecognizer(vosk.Model(str(self.model_dir)), PCM_RATE_HZ, json.dumps(GRAMMAR))
+        recognizer = vosk.KaldiRecognizer(vosk.Model(str(self.model_dir)), PCM_RATE_HZ, json.dumps(self.grammar))
         self.on_text("listening")
         while True:
             pcm = self._audio.get()
@@ -91,7 +160,7 @@ class VoiceListener(threading.Thread):
                 return
             if not pcm:  # reset marker
                 recognizer.Reset()
-                self.spotter = CommandSpotter()
+                self.spotter = self.make_spotter()
                 continue
             if recognizer.AcceptWaveform(pcm):
                 text = json.loads(recognizer.Result()).get("text", "")

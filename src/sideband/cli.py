@@ -11,7 +11,7 @@ from pathlib import Path
 from sideband.app import SidebandApp
 from sideband.log import HoldLog
 
-RADIO_COMMANDS = ("scan", "hold", "services", "ui", "firmware")
+RADIO_COMMANDS = ("scan", "hold", "services", "ui", "firmware", "doctor")
 
 
 def _scan(app: SidebandApp, timeout: float) -> int:
@@ -38,6 +38,40 @@ def _hold(app: SidebandApp, args: argparse.Namespace) -> int:
         return 1
 
 
+def _doctor(app: SidebandApp, args: argparse.Namespace) -> int:
+    from sideband.doctor import pendant_lines, report
+
+    lines, ok = report(app)
+    print("\n".join(lines))
+    if args.pendant:
+        address = args.address or app.saved_address()
+        if not address:
+            print("Pendant\n  ✗ no pendant remembered → wake it, run: sideband --via-app scan, then pass --address")
+            return 1
+        if app.launcher_running():
+            print("Pendant\n  · the Sideband launcher holds the pendant; see its Bluetooth app, or quit it and rerun")
+            return 0 if ok else 1
+        try:
+            facts = asyncio.run(app.pendant_facts(address))
+        except Exception as exc:
+            print(f"Pendant\n  ✗ could not connect to {address}: {exc}\n      → tap the pendant to wake it and keep it near the Mac")
+            return 1
+        print("\n".join(pendant_lines(facts)))
+    print("\nAll required checks pass." if ok else "\nFix the ✗ items above, top to bottom.")
+    return 0 if ok else 1
+
+
+def _models(app: SidebandApp, download: bool) -> int:
+    from sideband.doctor import model_checks
+
+    if download:
+        for line in app.download_models():
+            print(line)
+    for check in model_checks(app):
+        print(check.line())
+    return 0
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="sideband", description="Python app that holds an Omi pendant on Bluetooth.")
     parser.add_argument(
@@ -56,13 +90,26 @@ def _parser() -> argparse.ArgumentParser:
     services = sub.add_parser("services", help="List the pendant's GATT services and characteristics.")
     services.add_argument("--address", required=True)
 
+    doctor = sub.add_parser("doctor", help="Check this Mac, packages, models, app and (with --pendant) the pendant.")
+    doctor.add_argument("--pendant", action="store_true", help="Also connect and read the pendant (runs inside Sideband.app).")
+    doctor.add_argument("--address", default=None, help="Default: the pendant Sideband remembers.")
+
+    models = sub.add_parser("models", help="Show or download the local models (Whisper, assistant, voice).")
+    models.add_argument("--download", action="store_true")
+
     firmware = sub.add_parser("firmware", help="Show firmware image slots, or install an OTA zip.")
-    firmware.add_argument("--address", required=True)
+    firmware.add_argument("--address", default=None, help="Default: the pendant Sideband remembers.")
     firmware.add_argument("--update", type=Path, default=None, help="OTA zip. A dry run unless --yes-flash is given.")
+    firmware.add_argument("--install", choices=("official", "motion"), default=None,
+                          help="Download a pinned release, check its SHA-256, then act like --update.")
     firmware.add_argument("--yes-flash", action="store_true", help="Really install. The bootloader has no rollback.")
 
-    ui = sub.add_parser("ui", help="Open the input explorer: live button, mic, and state, with gesture mapping.")
-    ui.add_argument("--address", default=None, help="Default: the first Omi found by a scan.")
+    opener = sub.add_parser("open", help="Open a Sideband app, reusing the running launcher (for Shortcuts, Raycast, Alfred).")
+    opener.add_argument("name", choices=("launcher", "transcriber", "controls", "arcade", "bluetooth", "flap", "voice", "marble", "dodger", "catch"))
+
+    ui = sub.add_parser("ui", help="Open the Sideband launcher (Transcriber, Controls, Omi Flap 3D, Voice Flap).")
+    ui.add_argument("--address", default=None, help="Default: the last pendant used, else the first Omi found by a scan.")
+    ui.add_argument("--open", default=None, choices=("transcriber", "controls", "arcade", "bluetooth", "flap", "voice", "marble", "dodger", "catch"), help="Open one app right away.")
 
     hold = sub.add_parser("hold", help="Keep notifications open and reconnect after a gap.")
     hold.add_argument("--address", required=True)
@@ -85,8 +132,12 @@ def _parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     raw = list(sys.argv[1:] if argv is None else argv)
-    args = _parser().parse_args(raw)
     app = SidebandApp()
+    if not raw:
+        # Double-clicking Sideband.app starts it under launchd (parent pid 1): open the launcher.
+        # From a shell, go through the app so macOS grants Bluetooth.
+        return app.run_ui(None) if os.getppid() == 1 else app.run_via_app(["ui"])
+    args = _parser().parse_args(raw)
     if args.via_app and args.cmd in RADIO_COMMANDS:
         return app.run_via_app([a for a in raw if a != "--via-app"])
     if args.cmd == "protocol":
@@ -96,9 +147,31 @@ def main(argv: list[str] | None = None) -> int:
         return _scan(app, args.timeout)
     if args.cmd == "hold":
         return _hold(app, args)
+    if args.cmd == "open":
+        print(app.open_app(args.name))
+        return 0
     if args.cmd == "ui":
-        return app.run_ui(args.address)
+        return app.run_ui(args.address, args.open)
+    if args.cmd == "doctor":
+        return _doctor(app, args)
+    if args.cmd == "models":
+        return _models(app, args.download)
     if args.cmd == "firmware":
+        args.address = args.address or app.saved_address()
+        if not args.address:
+            print("no pendant remembered: wake it and run `sideband --via-app scan`, then pass --address")
+            return 1
+        if args.install is not None:
+            from sideband.firmware import RELEASES, FirmwareError, fetch_release
+
+            print(f"{args.install}: {RELEASES[args.install][2]}")
+            try:
+                package = fetch_release(args.install, app.support_dir / "firmware")
+            except (FirmwareError, OSError) as exc:
+                print(f"refusing: {exc}")
+                return 1
+            print(f"verified {package.name} (sha256 {RELEASES[args.install][1][:12]}…)")
+            return asyncio.run(app.firmware_update(args.address, package, args.yes_flash))
         if args.update is not None:
             return asyncio.run(app.firmware_update(args.address, args.update, args.yes_flash))
         print("\n".join(asyncio.run(app.firmware_info(args.address))))

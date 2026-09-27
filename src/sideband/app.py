@@ -68,6 +68,49 @@ class SidebandApp:
 
         return await firmware_images(address)
 
+    async def pendant_facts(self, address: str) -> dict[str, bytes]:
+        from sideband.radio import pendant_facts
+
+        return await pendant_facts(address)
+
+    def saved_address(self) -> str | None:
+        import json
+
+        try:
+            return json.loads((self.support_dir / "device.json").read_text(encoding="utf-8")).get("address") or None
+        except (OSError, ValueError):
+            return None
+
+    def download_models(self) -> list[str]:
+        """Fetch Whisper, the assistant model and the Vosk voice model, skipping what is already here."""
+        import urllib.request
+        import zipfile
+
+        from sideband.llm import MODEL as LLM_MODEL
+        from sideband.transcribe import MODEL as WHISPER_MODEL
+        from sideband.voice import MODEL_URL, model_path
+
+        done = []
+        try:
+            from huggingface_hub import snapshot_download
+        except ImportError:
+            return ["missing huggingface_hub: pip install -e '.[transcribe,llm]'"]
+        for name in (WHISPER_MODEL, LLM_MODEL):
+            print(f"model {name}", flush=True)
+            snapshot_download(name)
+            done.append(f"✓ {name}")
+        vosk_dir = model_path(self.support_dir)
+        if not vosk_dir.is_dir():
+            print(f"model {vosk_dir.name}", flush=True)
+            vosk_dir.parent.mkdir(parents=True, exist_ok=True)
+            archive = vosk_dir.parent / "vosk.zip"
+            urllib.request.urlretrieve(MODEL_URL, archive)
+            with zipfile.ZipFile(archive) as bundle:
+                bundle.extractall(vosk_dir.parent)
+            archive.unlink()
+        done.append(f"✓ {vosk_dir.name}")
+        return done
+
     async def firmware_update(self, address: str, package: Path, confirmed: bool) -> int:
         """Dry run unless `confirmed`. Prints the images, then flashes only with the owner's yes."""
         from sideband.firmware import FirmwareError, describe, read_package
@@ -81,6 +124,11 @@ class SidebandApp:
         if not confirmed:
             print("dry run: nothing sent. Add --yes-flash to install. The bootloader has no rollback.")
             return 0
+        facts = await self.pendant_facts(address)
+        model = facts.get("model", b"").decode("utf-8", "replace").strip("\x00")
+        if model != "Omi CV 1":
+            print(f"refusing: this firmware is for the Omi CV 1, and the pendant says {model or 'nothing'!r}")
+            return 1
         from sideband.radio import firmware_flash
 
         return 0 if await firmware_flash(address, images, print) else 1
@@ -111,6 +159,21 @@ class SidebandApp:
     def map_path(self) -> Path:
         return self.support_dir / "mappings.json"
 
+    @property
+    def recordings_dir(self) -> Path:
+        return self.support_dir / "recordings"
+
+    def sweep_recordings(self, keep: set[Path] | None = None) -> list[Path]:
+        """Delete recording audio older than 24 hours. Transcripts are kept."""
+        from sideband.recordings import sweep
+
+        return sweep(self.recordings_dir, time.time(), keep=keep)
+
+    @staticmethod
+    def open_path(path: Path, reveal: bool = False) -> None:
+        """Open a file in its default app, or reveal it in Finder."""
+        subprocess.Popen(["open", "-R", str(path)] if reveal else ["open", str(path)])
+
     def perform(self, gesture: str, mapping: Mapping) -> str:
         """Start an external action for a gesture. Returns a line for the event log. Never blocks."""
         command = action_command(mapping.action, mapping.arg, gesture)
@@ -136,10 +199,36 @@ class SidebandApp:
     def open_accessibility_settings() -> None:
         subprocess.Popen(["open", "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"])
 
-    def run_ui(self, address: str) -> int:
+    @property
+    def launcher_pid_path(self) -> Path:
+        return self.support_dir / "launcher.pid"
+
+    @property
+    def open_request_path(self) -> Path:
+        return self.support_dir / "open-request"
+
+    def launcher_running(self) -> bool:
+        try:
+            os.kill(int(self.launcher_pid_path.read_text(encoding="utf-8")), 0)
+            return True
+        except (OSError, ValueError):
+            return False
+
+    def open_app(self, name: str) -> str:
+        """Bring up one Sideband app. Reuses a running launcher; otherwise starts Sideband.app."""
+        if self.launcher_running():
+            self.open_request_path.write_text(name, encoding="utf-8")
+            return f"asked the running launcher to open {name}"
+        if not self.app_path.exists():
+            self.build_app()
+        args = ["ui"] + ([] if name == "launcher" else ["--open", name])
+        subprocess.Popen(["open", "-n", str(self.app_path), "--args", *args])
+        return f"started Sideband with {name}"
+
+    def run_ui(self, address: str | None, open_app: str | None = None) -> int:
         from sideband.ui import run
 
-        return run(self, address)
+        return run(self, address, open_app)
 
     # --- Mac wrapper -------------------------------------------------------------------------
 

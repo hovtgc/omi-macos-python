@@ -1,15 +1,19 @@
-"""Input explorer window. Shows every live pendant input and maps button gestures to Mac actions.
+"""Sideband launcher: one pendant connection shared by a collection of small apps.
 
-Runs inside Sideband.app (`sideband --via-app ui`) so macOS grants Bluetooth. Tk owns the main
-thread; bleak runs on its own asyncio thread and hands events over a queue. Nothing is recorded.
+Runs inside Sideband.app (`sideband --via-app ui`, or double-click the app) so macOS grants
+Bluetooth. Tk owns the main thread; bleak runs on its own asyncio thread and hands events over a
+queue. The launcher owns everything long-lived: the connection, gesture actions (they work with every
+app window closed), the recorder, the Whisper worker, the 24-hour audio limit, voice commands, and
+the event log. Apps are windows on top: Transcriber, Controls, and the Arcade games.
 """
 
 from __future__ import annotations
 
 import array
-import json
 import asyncio
+import json
 import math
+import os
 import queue
 import subprocess
 import threading
@@ -19,38 +23,38 @@ from pathlib import Path
 from tkinter import ttk
 
 from sideband.app import SidebandApp
-from sideband.audio import AudioUnavailable, decoder_for
-from sideband.game import BOOST, GameWindow
+from sideband.audio import AudioUnavailable, WavSink, decoder_for, file_to_wav
+from sideband.game import GameWindow
 from sideband.inputs import (
-    ACTIONS,
     BUTTON_UUID,
     DEVICE_STATE_UUID,
-    GESTURES,
-    NEEDS_ACCESSIBILITY,
     STORAGE_UUID,
+    ButtonDecoder,
     InputMap,
     button_code,
-    combo_from_key,
     button_kind,
-    ButtonDecoder,
     input_name,
-    installed_apps,
 )
-from sideband.motion import MOTION_UUID, Tilt, parse_motion
-from sideband.voice import VoiceListener, model_path
+from sideband.motion import MOTION_UUID, Motion, ShakeDetector, Tilt2D, parse_motion
 from sideband.protocol import AUDIO_CODEC_UUID, AUDIO_DATA_UUID, BATTERY_LEVEL_UUID, codec_name, strip_packet
+from sideband.llm import Doc, Job, LocalLLM, ask_all_messages, ask_messages, clean_summary, pick_context, summary_messages, transcript_text, with_summary
+from sideband.llm import title as transcript_title
+from sideband.recordings import list_recordings, new_path
+from sideband.transcribe import Transcriber
+from sideband.voice import VoiceListener, model_path
 
 PUMP_MS = 10
-FLASH_MS = 220
-ACCENT = "#2f7cf6"
-IDLE = "#c9ced6"
-KEYSTROKE_EXAMPLES = ["cmd+tab", "space", "right", "left", "cmd+shift+4", "ctrl+up", "cmd+w", "escape"]
-APPLESCRIPT_EXAMPLES = [
-    'tell application "Spotify" to playpause',
-    'tell application "Spotify" to next track',
-    'tell application "Music" to playpause',
-]
-APP_FOLDERS = [Path("/Applications"), Path("/System/Applications"), Path.home() / "Applications"]
+SWEEP_MS = 10 * 60 * 1000  # check the 24-hour audio limit this often
+GREY = "#8a8f98"
+APPS = (
+    ("transcriber", "🎙", "Transcriber", "Record from your Omi or pick an audio file. Transcribed on this Mac."),
+    ("controls", "🎛", "Controls", "Map taps to Mac actions and watch every live input."),
+    ("arcade", "🕹", "Arcade", "Omi Flap 3D, Voice Flap, Marble Maze, Star Dodger, Omi Catch."),
+    ("bluetooth", "📶", "Bluetooth", "Connect, scan, switch pendants and debug the link."),
+)
+REQUEST_MS = 400  # how often the launcher checks for `sideband open <app>` requests
+MENU_LISTEN_S = 5.0
+MENU_HINT = "say: open transcriber · start recording · summarize that · open arcade · play marble · close"
 
 
 class Radio(threading.Thread):
@@ -65,11 +69,16 @@ class Radio(threading.Thread):
         self.level_db = -90.0
         self.mic_on = False
         self.pcm_sink = None  # set while voice control listens; gets 16 kHz mono s16 PCM
+        self.recording: WavSink | None = None  # set while a recording runs; decodes on its own
         self._decoder = None
         self._lock = threading.Lock()
         self._loop: asyncio.AbstractEventLoop | None = None
-        self._stop: asyncio.Event | None = None
+        self._session: asyncio.Event | None = None  # set to end the current attempt or wait
         self._closed = False
+        self.paused = False
+        self.connected_at: float | None = None
+        self.last_error = ""
+        self.attempts = 0
 
     def run(self) -> None:
         asyncio.run(self._main())
@@ -78,8 +87,12 @@ class Radio(threading.Thread):
         from sideband.radio import scan, watch_inputs
 
         self._loop = asyncio.get_running_loop()
-        self._stop = asyncio.Event()
         while not self._closed:
+            self._session = asyncio.Event()
+            if self.paused:
+                self._post("status", "paused")
+                await self._session.wait()
+                continue
             if not self.address:
                 self._post("status", "scanning")
                 try:
@@ -94,20 +107,62 @@ class Radio(threading.Thread):
                 self.address = rows[0][1]
                 self._post("device", f"{rows[0][0]}  {self.address}")
             self._post("status", "connecting")
+            self.attempts += 1
             try:
-                await asyncio.wait_for(watch_inputs(self.address, self._on_event, self._stop, skip=()), timeout=None)
-                if not self._closed:
+                await watch_inputs(self.address, self._on_event, self._session, skip=())
+                if not self._closed and not self._session.is_set():
+                    self.last_error = "link dropped"
                     self._post("status", "disconnected")
             except Exception as exc:
+                self.last_error = f"{type(exc).__name__}: {exc}".rstrip(": ")
                 self._post("status", f"not reachable ({type(exc).__name__}), retrying")
-            await self._pause(2.0)
+            self.connected_at = None
+            if not self._session.is_set():
+                await self._pause(2.0)
 
     async def _pause(self, seconds: float) -> None:
-        assert self._stop is not None
+        assert self._session is not None
         try:
-            await asyncio.wait_for(self._stop.wait(), timeout=seconds)
+            await asyncio.wait_for(self._session.wait(), timeout=seconds)
         except asyncio.TimeoutError:
             pass
+
+    # --- control from the Tk thread --------------------------------------------------------
+
+    def _kick(self) -> None:
+        """End the current connection or wait so the loop picks up new settings."""
+        if self._loop is not None and self._session is not None:
+            self._loop.call_soon_threadsafe(self._session.set)
+
+    def reconnect(self) -> None:
+        self.paused = False
+        self._kick()
+
+    def use(self, address: str | None) -> None:
+        """Switch to another device, or None to scan for the first Omi."""
+        self.address, self.paused = address, False
+        self._kick()
+
+    def pause(self) -> None:
+        self.paused = True
+        self._kick()
+
+    def scan_all(self, seconds: float = 8.0) -> None:
+        """Scan in the background; posts ("scan_result", rows, error)."""
+        if self._loop is None:
+            self._post("scan_result", [], "radio not started")
+            return
+        from sideband.radio import scan_all
+
+        future = asyncio.run_coroutine_threadsafe(scan_all(seconds), self._loop)
+
+        def done(f) -> None:
+            try:
+                self._post("scan_result", f.result(), "")
+            except Exception as exc:
+                self._post("scan_result", [], f"{type(exc).__name__}: {exc}")
+
+        future.add_done_callback(done)
 
     def _post(self, *event: object) -> None:
         self.events.put((time.monotonic(), *event))
@@ -119,6 +174,8 @@ class Radio(threading.Thread):
             self.codec = codec_name(raw[0]) if raw else "unread"
             self._post("codec", self.codec)
         elif not uuid:
+            self.connected_at = time.time()
+            self.last_error = ""
             self._post("status", "connected")
         else:
             self._post("char", uuid, raw)
@@ -129,6 +186,9 @@ class Radio(threading.Thread):
             return
         with self._lock:
             self.frames += 1
+            recording = self.recording
+        if recording is not None:
+            recording.feed(payload)
         if not self.mic_on or self._decoder is None:
             return
         try:
@@ -160,286 +220,493 @@ class Radio(threading.Thread):
 
     def close(self) -> None:
         self._closed = True
-        if self._loop is not None and self._stop is not None:
-            self._loop.call_soon_threadsafe(self._stop.set)
+        self._kick()
 
 
-class InputWindow:
-    def __init__(self, app: SidebandApp, address: str | None) -> None:
+class Hub:
+    def __init__(self, app: SidebandApp, address: str | None, open_app: str | None = None) -> None:
         self.app = app
+        self.open_first = open_app
         self.events: queue.Queue = queue.Queue()
-        self.radio = Radio(address, self.events)
+        self.radio = Radio(address or self._saved_address(), self.events)
         self.map = InputMap.load(app.map_path)
         self.decoder = ButtonDecoder()
-        self.game: GameWindow | None = None
+        self.tilt = Tilt2D()
+        self._load_tilt()
+        self.shaker = ShakeDetector()
+        self.last_motion: Motion | None = None
+        self.motion_at = 0.0
+        self.motion_count = 0
+        self.transcriber = Transcriber(lambda wav, md, msg: self.post("transcribed", wav, md, msg))
+        self.rec_path: Path | None = None
+        self.rec_started = 0.0
         self.voice: VoiceListener | None = None
         self.voice_on = False
         self.voice_heard = ""
-        self.apps = installed_apps(APP_FOLDERS)
-        self.shortcuts: list[str] = []
-        self.presses = 0
-        self.state_changes = 0
-        self.fired = {g: 0 for g in GESTURES}
+        self.controls = None
+        self.transcriber_win = None
+        self.arcade = None
+        self.bluetooth = None
+        self.stream_rate: float | None = None
+        self.game = None  # the open game window: Flap, Voice Flap or a mini game
+        self.game_name = ""
+        self.menu_voice: VoiceListener | None = None
+        self.menu_until: float | None = None
+        self.menu_mic_was_on = False
+        self.windows: list[object] = []  # open app windows, most recent last, for "close"
+        self.llm: LocalLLM | None = None
+        self.job_ids = 0
+        self.settings = self._load_settings()
         self.last_audio = (0, time.monotonic())
-        self.tilt = Tilt()
-        self._load_tilt()
-        self.motion_at = 0.0
-        self.motion_count = 0
 
         self.root = tk.Tk()
-        self.root.title("Sideband · Omi inputs")
-        self.root.geometry("1080x720")
-        self.root.minsize(900, 620)
+        self.root.title("Sideband")
+        self.root.geometry("780x640")
+        self.root.minsize(700, 560)
         self.root.protocol("WM_DELETE_WINDOW", self.close)
         self._build()
-        self._log(f"mappings {app.map_path}")
-        if address:
-            self.device.set(address)
-        threading.Thread(target=self._load_shortcuts, daemon=True).start()
+        self._menus()
+        self.log(f"mappings {app.map_path}")
+        if self.radio.address:
+            self.device.set(self.radio.address)
 
-    # --- layout ----------------------------------------------------------------------------
+    # --- launcher window -------------------------------------------------------------------
 
     def _build(self) -> None:
         root = self.root
         root.columnconfigure(0, weight=1)
-        root.rowconfigure(1, weight=1)
+        root.rowconfigure(2, weight=1)
 
-        top = ttk.Frame(root, padding=(14, 12, 14, 6))
+        top = ttk.Frame(root, padding=(18, 14, 18, 4))
         top.grid(row=0, column=0, sticky="ew")
         self.status = tk.StringVar(value="starting")
         self.device = tk.StringVar(value="looking for an Omi…")
-        self.codec = tk.StringVar(value="codec —")
+        self.codec = tk.StringVar(value="")
         self.battery = tk.StringVar(value="battery —")
-        ttk.Label(top, text="Omi", font=("Helvetica", 20, "bold")).pack(side="left")
-        ttk.Label(top, textvariable=self.device, foreground="#888").pack(side="left", padx=12)
-        for var in (self.battery, self.codec, self.status):
+        self.rec_badge = tk.StringVar(value="")
+        self.llm_status = tk.StringVar(value="assistant: local, loads on first use")
+        ttk.Label(top, text="Sideband", font=("Helvetica", 24, "bold")).pack(side="left")
+        ttk.Label(top, text="for Omi", foreground=GREY, font=("Helvetica", 14)).pack(side="left", padx=(6, 0), pady=(8, 0))
+        for var in (self.battery, self.status):
             ttk.Label(top, textvariable=var).pack(side="right", padx=8)
+        ttk.Label(top, textvariable=self.rec_badge, foreground="#e5484d", font=("Helvetica", 14, "bold")).pack(side="right", padx=8)
+        ttk.Label(root, textvariable=self.device, foreground=GREY, padding=(18, 0)).grid(row=1, column=0, sticky="w")
+        voice = ttk.Frame(root, padding=(18, 8, 18, 0))
+        voice.grid(row=4, column=0, sticky="ew")
+        self.menu_button = ttk.Button(voice, text="🎤 Voice  ⌘L", command=self.voice_menu)
+        self.menu_button.pack(side="left")
+        self.menu_state = tk.StringVar(value=MENU_HINT)
+        ttk.Label(voice, textvariable=self.menu_state, foreground=GREY).pack(side="left", padx=10)
 
-        body = ttk.Frame(root, padding=(14, 6))
-        body.grid(row=1, column=0, sticky="nsew")
-        body.columnconfigure(0, weight=2, uniform="col")
-        body.columnconfigure(1, weight=3, uniform="col")
+        body = ttk.Frame(root, padding=(18, 10))
+        body.grid(row=2, column=0, sticky="nsew")
+        body.columnconfigure(0, weight=1)
         body.rowconfigure(1, weight=1)
-        self._build_live(ttk.LabelFrame(body, text="Live inputs", padding=12)).grid(
-            row=0, column=0, sticky="nsew", padx=(0, 8)
-        )
-        self._build_map(ttk.LabelFrame(body, text="Gesture → Mac action", padding=12)).grid(
-            row=0, column=1, sticky="nsew", padx=(8, 0)
-        )
+        cards = ttk.Frame(body)
+        cards.grid(row=0, column=0, sticky="ew")
+        for i, (key, icon, title, blurb) in enumerate(APPS):
+            card = ttk.LabelFrame(cards, padding=12, cursor="hand2")
+            card.grid(row=i // 2, column=i % 2, sticky="nsew", padx=6, pady=6)
+            cards.columnconfigure(i % 2, weight=1, uniform="card")
+            card.columnconfigure(1, weight=1)
+            ttk.Label(card, text=icon, font=("Helvetica", 30)).grid(row=0, column=0, rowspan=2, padx=(0, 12))
+            ttk.Label(card, text=title, font=("Helvetica", 16, "bold")).grid(row=0, column=1, sticky="w")
+            ttk.Label(card, text=blurb, foreground=GREY, wraplength=240).grid(row=1, column=1, sticky="w")
+            ttk.Button(card, text=f"Open  ⌘{i + 1}", command=lambda k=key: self.open(k)).grid(row=0, column=2, rowspan=2, padx=(8, 0))
+            for widget in (card, *card.winfo_children()):  # the whole card is clickable
+                widget.bind("<Button-1>", lambda _e, k=key: self.open(k), add="+")
 
-        logs = ttk.LabelFrame(body, text="Event log", padding=8)
-        logs.grid(row=1, column=0, columnspan=2, sticky="nsew", pady=(12, 8))
+        logs = ttk.LabelFrame(body, text="Event log", padding=6)
+        logs.grid(row=1, column=0, sticky="nsew", pady=(10, 0))
         logs.columnconfigure(0, weight=1)
         logs.rowconfigure(0, weight=1)
-        self.log = tk.Text(logs, height=8, font=("Menlo", 11), wrap="none", state="disabled", borderwidth=0)
-        self.log.grid(row=0, column=0, sticky="nsew")
-        scroll = ttk.Scrollbar(logs, command=self.log.yview)
+        self.log_text = tk.Text(logs, height=8, font=("Menlo", 11), wrap="none", state="disabled", borderwidth=0)
+        self.log_text.grid(row=0, column=0, sticky="nsew")
+        scroll = ttk.Scrollbar(logs, command=self.log_text.yview)
         scroll.grid(row=0, column=1, sticky="ns")
-        self.log["yscrollcommand"] = scroll.set
+        self.log_text["yscrollcommand"] = scroll.set
+        ttk.Label(
+            root,
+            text="Taps keep running their mapped actions with every app closed. Nothing leaves this Mac.",
+            foreground=GREY,
+            padding=(18, 0, 18, 4),
+        ).grid(row=3, column=0, sticky="w")
 
-    def _build_live(self, frame: ttk.LabelFrame) -> ttk.LabelFrame:
-        frame.columnconfigure(1, weight=1)
-        ttk.Label(frame, text="Button").grid(row=0, column=0, sticky="w")
-        self.led = tk.Canvas(frame, width=44, height=44, highlightthickness=0)
-        self.led.grid(row=0, column=1, sticky="w", pady=4)
-        self.led_dot = self.led.create_oval(4, 4, 40, 40, fill=IDLE, outline="")
-        self.button_info = tk.StringVar(value="taps 0")
-        ttk.Label(frame, textvariable=self.button_info).grid(row=1, column=0, columnspan=2, sticky="w")
+    def _menus(self) -> None:
+        """An Apps menu in the menu bar with ⌘1…⌘4, working from every Sideband window."""
+        bar = tk.Menu(self.root)
+        apps = tk.Menu(bar, tearoff=False)
+        for i, (key, icon, title, _blurb) in enumerate(APPS):
+            apps.add_command(label=f"{icon}  {title}", accelerator=f"Command-{i + 1}", command=lambda k=key: self.open(k))
+            self.root.bind_all(f"<Command-Key-{i + 1}>", lambda _e, k=key: self.open(k))
+        apps.add_separator()
+        apps.add_command(label="🎤  Voice command", accelerator="Command-L", command=self.voice_menu)
+        self.root.bind_all("<Command-Key-l>", lambda _e: self.voice_menu())
+        apps.add_command(label="Show launcher", accelerator="Command-0", command=self.show)
+        self.root.bind_all("<Command-Key-0>", lambda _e: self.show())
+        bar.add_cascade(label="Apps", menu=apps)
+        self.root.configure(menu=bar)
 
-        ttk.Separator(frame).grid(row=2, column=0, columnspan=2, sticky="ew", pady=10)
-        ttk.Label(frame, text="Gesture").grid(row=3, column=0, sticky="w")
-        self.gesture = tk.StringVar(value="—")
-        ttk.Label(frame, textvariable=self.gesture, font=("Helvetica", 22, "bold")).grid(row=3, column=1, sticky="w")
-        tiles = ttk.Frame(frame)
-        tiles.grid(row=4, column=0, columnspan=2, sticky="w", pady=(6, 0))
-        self.tiles: dict[str, tk.Label] = {}
-        for i, gesture in enumerate(GESTURES):
-            tile = tk.Label(tiles, text=f"{gesture}\n0", width=9, height=2, bg=IDLE, fg="#1d1d1f")
-            tile.grid(row=0, column=i, padx=3)
-            self.tiles[gesture] = tile
+    def show(self) -> None:
+        self.root.deiconify()
+        self.root.lift()
+        self.root.focus_force()
 
-        ttk.Label(tiles, text="hold = press ½–2 s, then let go. Holding 3 s powers the pendant off. "
-                  "Mapping triple delays double by 0.9 s.",
-                  foreground="#888", wraplength=300).grid(row=1, column=0, columnspan=len(GESTURES), sticky="w", pady=(6, 0))
-        ttk.Separator(frame).grid(row=5, column=0, columnspan=2, sticky="ew", pady=10)
-        self.mic_state = tk.StringVar(value="Microphone off")
-        ttk.Label(frame, textvariable=self.mic_state).grid(row=6, column=0, columnspan=2, sticky="w")
-        self.level = ttk.Progressbar(frame, maximum=60)
-        self.level.grid(row=7, column=0, columnspan=2, sticky="ew", pady=4)
-        self.mic_info = tk.StringVar(value="— frames/s")
-        ttk.Label(frame, textvariable=self.mic_info, foreground="#888").grid(row=8, column=0, columnspan=2, sticky="w")
+    def open(self, key: str) -> None:
+        if key == "transcriber":
+            from sideband.transcriber_app import TranscriberWindow
 
-        ttk.Separator(frame).grid(row=9, column=0, columnspan=2, sticky="ew", pady=10)
-        self.motion_info = tk.StringVar(value="Motion: not streamed by this firmware (tilt falls back to ← →)")
-        ttk.Label(frame, textvariable=self.motion_info, wraplength=330).grid(row=12, column=0, columnspan=2, sticky="w", pady=(10, 0))
-        self.state_info = tk.StringVar(value="device state —")
-        ttk.Label(frame, textvariable=self.state_info, foreground="#888").grid(row=10, column=0, columnspan=2, sticky="w")
-        games = ttk.Frame(frame)
-        games.grid(row=11, column=0, columnspan=2, sticky="w", pady=(12, 0))
-        ttk.Button(games, text="Play Omi Flap 3D", command=self._open_game).pack(side="left")
-        ttk.Button(games, text="Play Voice Flap", command=self._open_voice_game).pack(side="left", padx=8)
-        return frame
+            if self.transcriber_win is None:
+                self.transcriber_win = TranscriberWindow(self)
+            self.transcriber_win.lift()
+            self._opened(self.transcriber_win)
+        elif key == "controls":
+            from sideband.controls import ControlsWindow
 
-    def _build_map(self, frame: ttk.LabelFrame) -> ttk.LabelFrame:
-        frame.columnconfigure(2, weight=1)
-        self.rows: dict[str, tuple[tk.StringVar, tk.StringVar, ttk.Combobox]] = {}
-        self.record_buttons: dict[str, ttk.Button] = {}
-        self.recording_for: str | None = None
-        for i, gesture in enumerate(GESTURES):
-            mapping = self.map.gestures[gesture]
-            action = tk.StringVar(value=mapping.action)
-            arg = tk.StringVar(value=mapping.arg)
-            ttk.Label(frame, text=gesture, width=7).grid(row=i, column=0, sticky="w", pady=5)
-            ttk.Combobox(frame, textvariable=action, values=list(ACTIONS), state="readonly", width=13).grid(
-                row=i, column=1, padx=6
-            )
-            argbox = ttk.Combobox(frame, textvariable=arg)
-            argbox.grid(row=i, column=2, sticky="ew")
-            record = ttk.Button(frame, text="Record", width=7, command=lambda g=gesture: self._record_keys(g))
-            record.grid(row=i, column=3, padx=(6, 0))
-            self.record_buttons[gesture] = record
-            ttk.Button(frame, text="Test", width=5, command=lambda g=gesture: self._fire(g, test=True)).grid(
-                row=i, column=4, padx=(6, 0)
-            )
-            action.trace_add("write", lambda *_, g=gesture: self._action_changed(g))
-            arg.trace_add("write", lambda *_: self._save_map())
-            self.rows[gesture] = (action, arg, argbox)
-            self._fill_choices(gesture)
+            if self.controls is None:
+                self.controls = ControlsWindow(self)
+            self.controls.lift()
+            self._opened(self.controls)
+        elif key == "bluetooth":
+            from sideband.bluetooth_app import BluetoothWindow
 
-        self.hint = tk.StringVar()
-        ttk.Label(frame, textvariable=self.hint, foreground="#888", wraplength=560, justify="left").grid(
-            row=len(GESTURES), column=0, columnspan=5, sticky="w", pady=(12, 0)
-        )
-        self._update_hint()
+            if self.bluetooth is None:
+                self.bluetooth = BluetoothWindow(self)
+            self.bluetooth.lift()
+            self._opened(self.bluetooth)
+        elif key == "arcade":
+            from sideband.arcade import ArcadeWindow
 
-        access = ttk.Frame(frame)
-        access.grid(row=len(GESTURES) + 1, column=0, columnspan=5, sticky="w", pady=(12, 0))
-        self.access = tk.StringVar()
-        ttk.Label(access, textvariable=self.access).pack(side="left")
-        ttk.Button(access, text="Open Accessibility settings", command=self.app.open_accessibility_settings).pack(
-            side="left", padx=8
-        )
-        self._check_access()
-        return frame
-
-    def _check_access(self) -> None:
-        allowed = self.app.keystrokes_allowed()
-        text = {True: "Keystrokes: allowed", False: "Keystrokes: not allowed yet", None: "Keystrokes: unknown"}
-        self.access.set(text[allowed])
-        self.root.after(2000, self._check_access)
-
-    # --- mapping ---------------------------------------------------------------------------
-
-    def _load_shortcuts(self) -> None:
-        try:
-            out = subprocess.run(["shortcuts", "list"], capture_output=True, text=True, timeout=10).stdout
-        except (OSError, subprocess.TimeoutExpired):
-            return
-        self.shortcuts = sorted(line.strip() for line in out.splitlines() if line.strip())
-        self.events.put((time.monotonic(), "refill"))
-
-    def _fill_choices(self, gesture: str) -> None:
-        action, arg, argbox = self.rows[gesture]
-        choices = {
-            "open app": self.apps,
-            "shortcut": self.shortcuts,
-            "keystroke": KEYSTROKE_EXAMPLES,
-            "applescript": APPLESCRIPT_EXAMPLES,
-        }.get(action.get(), [])
-        takes_arg = bool(ACTIONS.get(action.get())) and action.get() != "microphone"
-        argbox.configure(values=choices, state="normal" if takes_arg else "disabled")
-        if gesture in self.record_buttons:
-            self.record_buttons[gesture].configure(state="normal" if action.get() == "keystroke" else "disabled")
-
-    def _record_keys(self, gesture: str) -> None:
-        """Capture the next key combo pressed in this window into the gesture's keystroke."""
-        if self.recording_for is not None:
-            self._stop_recording("cancelled")
-            return
-        self.recording_for = gesture
-        self.record_buttons[gesture].configure(text="Press…")
-        self.root.focus_set()
-        self.root.bind("<KeyPress>", self._recorded_key)
-        self._record_timeout = self.root.after(8000, lambda: self._stop_recording("timed out"))
-
-    def _recorded_key(self, event: tk.Event) -> str | None:
-        combo = combo_from_key(event.keycode >> 24, event.keysym, event.state)
-        if combo is None:
-            return None
-        gesture = self.recording_for
-        self._stop_recording(None)
-        if gesture is not None:
-            self.rows[gesture][1].set(combo)
-            self._log(f"{gesture}: recorded keystroke {combo}")
-        return "break"
-
-    def _stop_recording(self, reason: str | None) -> None:
-        if self.recording_for is None:
-            return
-        self.root.unbind("<KeyPress>")
-        self.root.after_cancel(self._record_timeout)
-        self.record_buttons[self.recording_for].configure(text="Record")
-        if reason:
-            self._log(f"{self.recording_for}: key recording {reason}")
-        self.recording_for = None
-
-    def _action_changed(self, gesture: str) -> None:
-        self._fill_choices(gesture)
-        self._save_map()
-
-    def _save_map(self) -> None:
-        for gesture, (action, arg, _box) in self.rows.items():
-            mapping = self.map.gestures[gesture]
-            mapping.action, mapping.arg = action.get(), arg.get()
-        self.map.save(self.app.map_path)
-        self._update_hint()
-
-    def _update_hint(self) -> None:
-        notes = [f"{g}: {ACTIONS[m.action]}" for g, m in self.map.gestures.items() if ACTIONS.get(m.action)]
-        if any(m.action in NEEDS_ACCESSIBILITY for m in self.map.gestures.values()):
-            notes.append("keystroke: turn Sideband on in Privacy & Security → Accessibility (button below)")
-        self.hint.set("Saved automatically.\n" + "\n".join(notes))
-
-    # --- behaviour -------------------------------------------------------------------------
-
-    def _fire(self, gesture: str, test: bool = False) -> None:
-        self.fired[gesture] += 1
-        self.gesture.set(gesture)
-        tile = self.tiles[gesture]
-        tile.configure(text=f"{gesture}\n{self.fired[gesture]}", bg=ACCENT, fg="white")
-        self.root.after(FLASH_MS * 2, lambda: tile.configure(bg=IDLE, fg="#1d1d1f"))
-        mapping = self.map.gestures[gesture]
-        prefix = "test " if test else ""
-        if mapping.action == "microphone":
-            self._toggle_mic()
+            if self.arcade is None:
+                self.arcade = ArcadeWindow(self)
+            self.arcade.lift()
+            self._opened(self.arcade)
         else:
-            self._log(prefix + self.app.perform(gesture, mapping))
+            self.open_game(key)
 
-    def _toggle_mic(self) -> None:
+    def _opened(self, window: object) -> None:
+        if window in self.windows:
+            self.windows.remove(window)
+        self.windows.append(window)
+
+    def window_closed(self, window: object) -> None:
+        if window in self.windows:
+            self.windows.remove(window)
+        if window is self.controls:
+            self.controls = None
+        elif window is self.transcriber_win:
+            self.transcriber_win = None
+        elif window is self.arcade:
+            self.arcade = None
+        elif window is self.bluetooth:
+            self.bluetooth = None
+
+    # --- shared services -------------------------------------------------------------------
+
+    def post(self, *event: object) -> None:
+        self.events.put((time.monotonic(), *event))
+
+    def log(self, text: str) -> None:
+        self.log_text.configure(state="normal")
+        self.log_text.insert("end", f"{time.strftime('%H:%M:%S')}  {text}\n")
+        self.log_text.see("end")
+        self.log_text.configure(state="disabled")
+
+    def fire(self, gesture: str, test: bool = False) -> None:
+        if self.controls is not None:
+            self.controls.on_fired(gesture)
+        mapping = self.map.gestures[gesture]
+        if mapping.action == "microphone":
+            self.toggle_mic()
+        elif mapping.action == "record":
+            self.toggle_recording()
+        elif mapping.action == "voice menu":
+            self.voice_menu()
+        else:
+            self.log(("test " if test else "") + self.app.perform(gesture, mapping))
+
+    # --- assistant (local LLM) -------------------------------------------------------------
+
+    @property
+    def _settings_path(self) -> Path:
+        return self.app.support_dir / "settings.json"
+
+    def _load_settings(self) -> dict[str, object]:
+        try:
+            return {"auto_summary": True, **json.loads(self._settings_path.read_text(encoding="utf-8"))}
+        except (OSError, ValueError, TypeError):
+            return {"auto_summary": True}
+
+    def set_setting(self, key: str, value: object) -> None:
+        self.settings[key] = value
+        self._settings_path.parent.mkdir(parents=True, exist_ok=True)
+        self._settings_path.write_text(json.dumps(self.settings, indent=2) + "\n", encoding="utf-8")
+
+    def _assistant(self) -> LocalLLM:
+        if self.llm is None:
+            self.llm = LocalLLM(lambda text: self.post("llm_status", text))
+            self.llm.start()
+        return self.llm
+
+    def _job(self, messages: list[dict[str, str]], done_kind: str, *extra: object, max_tokens: int = 600) -> int:
+        self.job_ids += 1
+        job_id = self.job_ids
+        self._assistant().submit(
+            Job(
+                messages,
+                lambda token: self.post("llm_token", job_id, token),
+                lambda text, error: self.post(done_kind, job_id, text, error, *extra),
+                max_tokens=max_tokens,
+            )
+        )
+        return job_id
+
+    def summarize(self, transcript: Path) -> int | None:
+        text = transcript_text(transcript.read_text(encoding="utf-8"))
+        if not text:
+            self.log(f"{transcript.stem}: nothing to summarize")
+            return None
+        self.llm_status.set("assistant: summarizing…")
+        self.log(f"{transcript.stem}: summarizing on this Mac")
+        return self._job(summary_messages(text), "llm_summary", transcript)
+
+    def ask(self, question: str, transcript: Path | None) -> int:
+        """Ask about one transcript, or (None) about the recent ones, newest first."""
+        if transcript is not None:
+            messages = ask_messages(question, transcript_text(transcript.read_text(encoding="utf-8")))
+        else:
+            docs = []
+            for rec in list_recordings(self.app.recordings_dir):
+                if rec.transcript is not None:
+                    markdown = rec.transcript.read_text(encoding="utf-8")
+                    docs.append(Doc(transcript_title(markdown), transcript_text(markdown)))
+            messages = ask_all_messages(question, pick_context(docs))
+        self.llm_status.set("assistant: thinking…")
+        return self._job(messages, "llm_answer", max_tokens=500)
+
+    def latest_transcript(self) -> Path | None:
+        return next((rec.transcript for rec in list_recordings(self.app.recordings_dir) if rec.transcript), None)
+
+    def _on_summary(self, job_id: int, text: str, error: str, transcript: Path) -> None:
+        self.llm_status.set("assistant: ready")
+        if error or not text:
+            self.log(f"{transcript.stem}: summary failed: {error or 'empty reply'}")
+        else:
+            transcript.write_text(with_summary(transcript.read_text(encoding="utf-8"), clean_summary(text)), encoding="utf-8")
+            self.log(f"{transcript.stem}: summary and action items added")
+            subprocess.Popen(["osascript", "-e", 'display notification "Summary and action items ready" with title "Omi"'])
+        if self.transcriber_win is not None:
+            self.transcriber_win.job_done(job_id, text, error, transcript)
+
+    # --- voice menu ------------------------------------------------------------------------
+
+    def voice_menu(self) -> None:
+        """Listen for one spoken menu command, up to MENU_LISTEN_S. Pressing again cancels."""
+        if self.menu_until is not None:
+            self._stop_menu("cancelled")
+            return
+        if self.voice is not None:
+            self.menu_state.set("Voice Flap is using the mic; close it first")
+            return
+        if self.menu_voice is None:
+            self.menu_voice = VoiceListener(
+                model_path(self.app.support_dir),
+                lambda command: self.post("menu_cmd", command),
+                lambda text: self.post("menu_text", text),
+                menu=True,
+            )
+            self.menu_voice.start()
+        self.menu_mic_was_on = self.radio.mic_on
+        error = self.radio.set_mic(True)
+        if error:
+            self.menu_state.set(f"voice: {error}")
+            return
+        if self.status.get() != "connected":
+            self.menu_state.set("connect the pendant first (Bluetooth app)")
+            self.radio.set_mic(self.menu_mic_was_on)
+            return
+        self.menu_voice.reset()
+        self.radio.pcm_sink = self.menu_voice.feed
+        self.menu_until = time.monotonic() + MENU_LISTEN_S
+        self.menu_button.configure(text="■ Listening…")
+        self.menu_state.set("🎤 listening… " + MENU_HINT.replace("say: ", ""))
+
+    def _stop_menu(self, note: str) -> None:
+        if self.menu_until is None:
+            return
+        self.menu_until = None
+        self.radio.pcm_sink = None
+        self.radio.set_mic(self.menu_mic_was_on)
+        self.menu_button.configure(text="🎤 Voice  ⌘L")
+        self.menu_state.set(note)
+
+    def _run_menu(self, command: str) -> None:
+        self.log(f"voice menu: {command}")
+        self._stop_menu(f"heard “{command.replace(':', ' ')}”")
+        kind, _, target = command.partition(":")
+        if kind == "open":
+            self.open(target)
+        elif kind == "play":
+            if self.game is not None and self.game_name != target:
+                self.game.close()
+            self.open_game(target)
+        elif kind == "summarize":
+            latest = self.latest_transcript()
+            self.open("transcriber")
+            if latest is None:
+                self.log("voice menu: no transcript to summarize yet")
+            else:
+                self.summarize(latest)
+        elif kind == "record":
+            recording = self.radio.recording is not None
+            if target == "toggle" or (target == "start") != recording:
+                self.toggle_recording()
+            self.open("transcriber")
+        elif kind == "close":
+            if self.game is not None:
+                self.game.close()
+            elif self.windows:
+                self.windows[-1].close()  # type: ignore[attr-defined]
+        elif kind == "home":
+            self.show()
+
+    def toggle_mic(self) -> None:
         error = self.radio.set_mic(not self.radio.mic_on)
         if error:
-            self._log(f"microphone: {error}")
+            self.log(f"microphone: {error}")
             return
-        self.mic_state.set("● Microphone live" if self.radio.mic_on else "Microphone off")
-        self._log("microphone live (not recorded)" if self.radio.mic_on else "microphone off")
+        self.log("microphone live (not recorded)" if self.radio.mic_on else "microphone off")
 
-    def _open_game(self) -> None:
-        if self.game is None:
-            self.game = GameWindow(self.root, self._game_closed, self._pendant_steer, self._game_key)
-            self._log("Omi Flap 3D open: taps flap instead of running actions")
+    def record_hint(self) -> str:
+        gestures = [g for g, m in self.map.gestures.items() if m.action == "record"]
+        how = f"{' or '.join(gestures)} tap on your Omi" if gestures else "the button"
+        verb = "stop" if self.rec_path else "start"
+        return f"Click the button or {how} to {verb}."
 
-    def _open_voice_game(self) -> None:
+    def rec_level(self) -> float:
+        sink = self.radio.recording
+        return sink.level_db if sink is not None else -90.0
+
+    def toggle_recording(self) -> None:
+        if self.radio.recording is None:
+            folder = self.app.recordings_dir
+            folder.mkdir(parents=True, exist_ok=True)
+            path = new_path(folder, time.time())
+            sink = WavSink(path)
+            try:
+                sink.open(self.radio.codec)
+            except AudioUnavailable as exc:
+                self.log(f"record: {exc}")
+                return
+            self.radio.recording = sink
+            self.rec_path, self.rec_started = path, time.monotonic()
+            self.log(f"recording → {path.name}")
+        else:
+            sink, self.radio.recording = self.radio.recording, None
+            sink.close()
+            self.rec_path = None
+            self.rec_badge.set("")
+            self.log(f"recording saved {sink.path.name} ({sink.seconds():.0f}s), transcribing on this Mac")
+            self.transcriber.submit(sink.path)
+        if self.transcriber_win is not None:
+            self.transcriber_win.recording_changed(self.rec_path is not None)
+
+    def import_file(self, source: Path) -> None:
+        """Decode any audio file to a 16 kHz WAV in the recordings folder, then transcribe it."""
+        folder = self.app.recordings_dir
+        folder.mkdir(parents=True, exist_ok=True)
+        target = new_path(folder, time.time())
+        self.log(f"importing {source.name}")
+
+        def work() -> None:
+            try:
+                seconds = file_to_wav(source, target)
+            except Exception as exc:
+                target.unlink(missing_ok=True)
+                self.post("imported", source, None, str(exc))
+                return
+            self.post("imported", source, target, f"{seconds:.0f}s")
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _on_transcribed(self, wav: Path, transcript: Path | None, message: str) -> None:
+        self.log(f"{wav.stem}: {message}")
+        if transcript is not None:
+            subprocess.Popen(["osascript", "-e", f'display notification "{message}" with title "Omi transcript ready"'])
+            if self.settings.get("auto_summary"):
+                self.summarize(transcript)
+        if self.transcriber_win is not None:
+            self.transcriber_win.transcript_ready(wav, transcript)
+
+    def _sweep(self) -> None:
+        keep = {self.rec_path} if self.rec_path else set()
+        for path in self.app.sweep_recordings(keep):
+            self.log(f"deleted audio older than 24 h: {path.name}")
+        if self.transcriber_win is not None:
+            self.transcriber_win.refresh()
+        self.root.after(SWEEP_MS, self._sweep)
+
+    def _queue_untranscribed(self) -> None:
+        """Recordings whose transcription never finished (app closed) get queued again."""
+        for rec in list_recordings(self.app.recordings_dir):
+            if rec.audio is not None and rec.transcript is None:
+                self.transcriber.submit(rec.audio)
+
+    # --- device memory ---------------------------------------------------------------------
+
+    @property
+    def _device_path(self) -> Path:
+        return self.app.support_dir / "device.json"
+
+    def _saved_address(self) -> str | None:
+        try:
+            return json.loads(self._device_path.read_text(encoding="utf-8")).get("address") or None
+        except (OSError, ValueError):
+            return None
+
+    def use_device(self, address: str | None) -> None:
+        """Switch pendants, or forget the saved one (None) so the next Omi found is used."""
+        if address is None:
+            self._device_path.unlink(missing_ok=True)
+            self.device.set("looking for an Omi…")
+        else:
+            self.device.set(address)
+        self.radio.use(address)
+
+    def _remember_address(self) -> None:
+        if self.radio.address and self.radio.address != self._saved_address():
+            self._device_path.parent.mkdir(parents=True, exist_ok=True)
+            self._device_path.write_text(json.dumps({"address": self.radio.address}) + "\n", encoding="utf-8")
+
+    # --- games -----------------------------------------------------------------------------
+
+    def open_game(self, name: str) -> None:
         if self.game is not None:
+            self.game.top.lift()
             return
-        self.voice_on, self.voice_heard = False, "loading voice model…"
-        self.voice = VoiceListener(
-            model_path(self.app.support_dir),
-            lambda word: self.events.put((time.monotonic(), "voice_cmd", word)),
-            lambda text: self.events.put((time.monotonic(), "voice_text", text)),
-        )
-        self.voice.start()
-        self.game = GameWindow(self.root, self._game_closed, voice=True, voice_status=lambda: (self.voice_on, self.voice_heard))
-        self._log("Voice Flap open: tap the pendant to unmute, say go left / right / up / down (nothing recorded)")
+        self.recentre()
+        if name in ("marble", "dodger", "catch"):
+            from sideband.arcade import MiniGameWindow
+
+            self.game = MiniGameWindow(self, name, self._game_closed)
+            self.game_name = name
+            self.log(f"{name} open: taps, tilt and shakes go to the game")
+            return
+        self.game_name = name
+        if name == "voice":
+            self._stop_menu(MENU_HINT)
+            self.voice_on, self.voice_heard = False, "loading voice model…"
+            self.voice = VoiceListener(
+                model_path(self.app.support_dir),
+                lambda word: self.post("voice_cmd", word),
+                lambda text: self.post("voice_text", text),
+            )
+            self.voice.start()
+            self.game = GameWindow(self.root, self._game_closed, voice=True, voice_status=lambda: (self.voice_on, self.voice_heard))
+            self.log("Voice Flap open: tap the pendant to unmute, say go left / right / up / down (nothing recorded)")
+        else:
+            self.game = GameWindow(self.root, self._game_closed, self._pendant_steer, self._game_key)
+            self.log("Omi Flap 3D open: taps flap instead of running actions")
 
     def _toggle_voice(self) -> None:
         if self.voice is None:
@@ -448,33 +715,73 @@ class InputWindow:
             error = self.radio.set_mic(True)
             if error:
                 self.voice_heard = error
-                self._log(f"voice: {error}")
+                self.log(f"voice: {error}")
                 return
             self.voice.reset()
             self.radio.pcm_sink = self.voice.feed
             self.voice_on = True
-            self._log("voice: listening")
+            self.log("voice: listening")
         else:
             self.radio.pcm_sink = None
             self.radio.set_mic(False)
             self.voice_on = False
-            self._log("voice: muted")
+            self.log("voice: muted")
 
-    def _pendant_steer(self) -> tuple[float, str] | None:
+    def _game_closed(self) -> None:
+        game, self.game = self.game, None
+        flight = getattr(game, "game", None)
+        if isinstance(game, GameWindow) and flight is not None and getattr(flight, "best", 0):
+            self.record_score(self.game_name, float(flight.best))
+        if self.voice is not None:
+            self.radio.pcm_sink = None
+            self.radio.set_mic(False)
+            self.voice.close()
+            self.voice, self.voice_on = None, False
+        self.log("game closed")
+
+    def stick(self) -> tuple[float, float, str] | None:
+        """2-axis pendant tilt, or None when no motion arrived in the last half second."""
         if time.monotonic() - self.motion_at > 0.5:
             return None
-        axis = "xyz"[self.tilt.axis] + (" inverted" if self.tilt.invert else "")
-        return self.tilt.value, f"pendant tilt ({axis}) · C recentre · X axis · I invert"
+        return self.tilt.x, self.tilt.y, "pendant tilt · C recentre"
+
+    def latest_motion(self) -> Motion | None:
+        return self.last_motion if time.monotonic() - self.motion_at < 0.5 else None
+
+    def recentre(self) -> None:
+        self.tilt.rest = None  # the next sample becomes "level"
+
+    def _pendant_steer(self) -> tuple[float, str] | None:
+        stick = self.stick()
+        return None if stick is None else (stick[0], stick[2])
 
     def _game_key(self, key: str) -> None:
         if key == "c":
-            self.tilt.rest = None
-            return
-        if key == "x":
-            self.tilt.next_axis()
-        elif key == "i":
-            self.tilt.invert = not self.tilt.invert
-        self._save_tilt()
+            self.recentre()
+
+    @property
+    def _scores_path(self) -> Path:
+        return self.app.support_dir / "arcade.json"
+
+    def _scores(self) -> dict[str, float]:
+        try:
+            return {k: float(v) for k, v in json.loads(self._scores_path.read_text(encoding="utf-8")).items()}
+        except (OSError, ValueError, AttributeError):
+            return {}
+
+    def best(self, name: str) -> float | None:
+        return self._scores().get(name)
+
+    def record_score(self, name: str, score: float, lower_is_better: bool = False) -> None:
+        scores = self._scores()
+        old = scores.get(name)
+        if old is None or (score < old if lower_is_better else score > old):
+            scores[name] = score
+            self._scores_path.parent.mkdir(parents=True, exist_ok=True)
+            self._scores_path.write_text(json.dumps(scores, indent=2) + "\n", encoding="utf-8")
+            self.log(f"{name}: new best {score:g}")
+        if self.arcade is not None:
+            self.arcade.refresh_scores()
 
     @property
     def _tilt_path(self) -> Path:
@@ -482,65 +789,63 @@ class InputWindow:
 
     def _load_tilt(self) -> None:
         try:
-            saved = json.loads(self._tilt_path.read_text(encoding="utf-8"))
-            self.tilt.axis = int(saved.get("axis", 0)) % 3
-            self.tilt.invert = bool(saved.get("invert", False))
-        except (OSError, ValueError):
+            self.tilt.load(json.loads(self._tilt_path.read_text(encoding="utf-8")))
+        except (OSError, ValueError, AttributeError):
             pass
 
-    def _save_tilt(self) -> None:
+    def save_tilt(self) -> None:
         self._tilt_path.parent.mkdir(parents=True, exist_ok=True)
-        self._tilt_path.write_text(json.dumps({"axis": self.tilt.axis, "invert": self.tilt.invert}) + "\n", encoding="utf-8")
-        self._log(f"tilt axis {'xyz'[self.tilt.axis]}{' inverted' if self.tilt.invert else ''} saved")
+        self._tilt_path.write_text(json.dumps(self.tilt.settings()) + "\n", encoding="utf-8")
+        self.log(f"tilt calibration saved {self.tilt.settings()}")
 
-    def _on_motion(self, raw: bytes, at: float) -> None:
-        sample = parse_motion(raw)
-        if sample is None:
-            self._log(f"motion  unknown payload {len(raw)} bytes {raw.hex()}")
-            return
-        self.tilt.update(sample)
-        self.motion_at = at
-        self.motion_count += 1
-        if self.motion_count % 5 == 0:
-            self.motion_info.set(
-                f"Motion: a=({sample.ax:+.1f}, {sample.ay:+.1f}, {sample.az:+.1f}) m/s²  "
-                f"g=({sample.gx:+.1f}, {sample.gy:+.1f}, {sample.gz:+.1f}) rad/s  tilt {self.tilt.value:+.2f}"
-            )
-
-    def _game_closed(self) -> None:
-        self.game = None
-        self._log("Omi Flap 3D closed")
-        if self.voice is not None:
-            self.radio.pcm_sink = None
-            self.radio.set_mic(False)
-            self.voice.close()
-            self.voice, self.voice_on = None, False
+    # --- events ----------------------------------------------------------------------------
 
     def _on_button(self, raw: bytes, at: float) -> None:
         code = button_code(raw)
         kind = button_kind(code)
         tap = kind in ("single", "double")
-        if tap:
-            self.presses += 1
-            self.led.itemconfigure(self.led_dot, fill=ACCENT)
-            self.root.after(FLASH_MS, lambda: self.led.itemconfigure(self.led_dot, fill=IDLE))
-        self.button_info.set(f"taps {self.presses} · last {kind} (code {code})")
+        if self.controls is not None:
+            self.controls.on_button(kind, code, tap)
         if self.game is not None:
             if self.voice is not None:  # voice game: one tap mutes / unmutes the mic
                 if kind == "single":
                     self._toggle_voice()
-            elif tap:  # the game reacts to raw taps at once; no gesture decoding delay
-                self.game.flap(BOOST if kind == "double" else 1.0)
+            elif tap:  # games react to raw taps at once; no gesture decoding delay
+                self.game.on_tap(kind)
             return
-        self._log(f"button  {raw.hex()}  {kind}")
+        self.log(f"button  {raw.hex()}  {kind}")
         self.decoder.triples = self.map.gestures["triple"].action != "none"
         for gesture in self.decoder.feed(code, at):
-            self._fire(gesture)
+            self.fire(gesture)
+
+    def _on_motion(self, raw: bytes, at: float) -> None:
+        sample = parse_motion(raw)
+        if sample is None:
+            self.log(f"motion  unknown payload {len(raw)} bytes {raw.hex()}")
+            return
+        self.tilt.update(sample)
+        self.last_motion, self.motion_at = sample, at
+        self.motion_count += 1
+        if self.shaker.feed(sample, at):
+            self.log("shake")
+            if self.game is not None:
+                self.game.on_shake()
+        if self.arcade is not None:
+            self.arcade.on_motion(sample)
+        if self.controls is not None:
+            self.controls.on_motion(sample, self.tilt.x, self.motion_count)
 
     def _handle(self, at: float, kind: str, *rest: object) -> None:
         if kind == "status":
             self.status.set(str(rest[0]))
-            self._log(f"status  {rest[0]}")
+            self.log(f"status  {rest[0]}")
+            if self.bluetooth is not None:
+                self.bluetooth.add_log(str(rest[0]) + (f" — {self.radio.last_error}" if "not reachable" in str(rest[0]) else ""))
+            if rest[0] == "connected":
+                self._remember_address()
+        elif kind == "scan_result":
+            if self.bluetooth is not None:
+                self.bluetooth.scan_result(rest[0], str(rest[1]))  # type: ignore[arg-type]
         elif kind == "device":
             self.device.set(str(rest[0]))
         elif kind == "codec":
@@ -548,12 +853,41 @@ class InputWindow:
         elif kind == "voice_cmd":
             if self.game is not None and self.voice_on:
                 self.game.command(str(rest[0]))
-                self._log(f"voice: {rest[0]}")
+                self.log(f"voice: {rest[0]}")
+        elif kind == "llm_status":
+            self.llm_status.set(f"assistant: {rest[0]}")
+            self.log(f"assistant: {rest[0]}")
+        elif kind == "llm_token":
+            if self.transcriber_win is not None:
+                self.transcriber_win.token(int(rest[0]), str(rest[1]))  # type: ignore[arg-type]
+        elif kind == "llm_summary":
+            self._on_summary(int(rest[0]), str(rest[1]), str(rest[2]), rest[3])  # type: ignore[arg-type]
+        elif kind == "llm_answer":
+            self.llm_status.set("assistant: ready")
+            if self.transcriber_win is not None:
+                self.transcriber_win.job_done(int(rest[0]), str(rest[1]), str(rest[2]), None)  # type: ignore[arg-type]
+        elif kind == "menu_cmd":
+            if self.menu_until is not None:
+                self._run_menu(str(rest[0]))
+        elif kind == "menu_text":
+            if self.menu_until is not None and rest[0] != "listening":
+                self.menu_state.set(f"🎤 heard: {rest[0]}")
         elif kind == "voice_text":
             self.voice_heard = str(rest[0])
+        elif kind == "transcribed":
+            self._on_transcribed(rest[0], rest[1], str(rest[2]))  # type: ignore[arg-type]
+        elif kind == "imported":
+            source, target, message = rest
+            if target is None:
+                self.log(f"import {source.name} failed: {message}")  # type: ignore[union-attr]
+            else:
+                self.log(f"imported {source.name} ({message}), transcribing on this Mac")  # type: ignore[union-attr]
+                self.transcriber.submit(target)  # type: ignore[arg-type]
+                if self.transcriber_win is not None:
+                    self.transcriber_win.refresh(select=target.stem)  # type: ignore[union-attr]
         elif kind == "refill":
-            for gesture in self.rows:
-                self._fill_choices(gesture)
+            if self.controls is not None:
+                self.controls.refill()
         elif kind == "char":
             uuid, raw = str(rest[0]), bytes(rest[1])  # type: ignore[arg-type]
             if uuid == BUTTON_UUID:
@@ -563,12 +897,13 @@ class InputWindow:
             elif uuid == BATTERY_LEVEL_UUID:
                 self.battery.set(f"battery {raw[0]}%" if raw else "battery —")
             elif uuid == DEVICE_STATE_UUID:
-                self.state_changes += 1
-                self.state_info.set(f"device state {raw.hex()} · changes {self.state_changes}")
+                if self.controls is not None:
+                    self.controls.on_state(raw)
             elif uuid != STORAGE_UUID:
-                self._log(f"{input_name(uuid):8} {raw.hex()}")
+                self.log(f"{input_name(uuid):8} {raw.hex()}")
 
     def _pump(self) -> None:
+        self.root.after(PUMP_MS, self._pump)  # first, so an error below cannot stop the loop
         while True:
             try:
                 event = self.events.get_nowait()
@@ -577,30 +912,62 @@ class InputWindow:
             self._handle(*event)
         now = time.monotonic()
         for gesture in self.decoder.poll(now):
-            self._fire(gesture)
+            self.fire(gesture)
+        if self.menu_until is not None and now > self.menu_until:
+            self._stop_menu("didn't catch that · " + MENU_HINT)
         frames, level_db = self.radio.audio_stats()
         then_frames, then = self.last_audio
+        rate = None
         if now - then >= 1.0:
-            self.mic_info.set(f"stream {(frames - then_frames) / (now - then):.1f} frames/s")
+            rate = (frames - then_frames) / (now - then)
             self.last_audio = (frames, now)
-        self.level["value"] = max(0.0, level_db + 60) if self.radio.mic_on else 0
-        self.root.after(PUMP_MS, self._pump)
+            self.stream_rate = rate if self.status.get() == "connected" else None
+        if self.radio.recording is not None:
+            span = int(now - self.rec_started)
+            self.rec_badge.set(f"● REC {span // 60}:{span % 60:02d}")
+        if self.controls is not None:
+            self.controls.on_tick(rate, self.radio.mic_on, level_db)
+        if self.transcriber_win is not None:
+            self.transcriber_win.on_tick()
 
-    def _log(self, text: str) -> None:
-        self.log.configure(state="normal")
-        self.log.insert("end", f"{time.strftime('%H:%M:%S')}  {text}\n")
-        self.log.see("end")
-        self.log.configure(state="disabled")
+    def _check_requests(self) -> None:
+        """`sideband open <app>` from a shell, Shortcuts or Raycast drops a request file here."""
+        self.root.after(REQUEST_MS, self._check_requests)
+        request = self.app.open_request_path
+        if request.exists():
+            wanted = request.read_text(encoding="utf-8").strip()
+            request.unlink(missing_ok=True)
+            self.show()
+            if wanted and wanted != "launcher":
+                self.open(wanted)
 
     def close(self) -> None:
+        self.app.launcher_pid_path.unlink(missing_ok=True)
+        if self.radio.recording is not None:  # keep what was captured; it is transcribed next launch
+            self.radio.recording.close()
+            self.radio.recording = None
+        self.transcriber.close()
+        if self.menu_voice is not None:
+            self.menu_voice.close()
+        if self.llm is not None:
+            self.llm.close()
         if self.voice is not None:
             self.voice.close()
         self.radio.close()
         self.root.destroy()
 
     def run(self) -> int:
+        self.app.launcher_pid_path.parent.mkdir(parents=True, exist_ok=True)
+        self.app.launcher_pid_path.write_text(str(os.getpid()), encoding="utf-8")
+        self.app.open_request_path.unlink(missing_ok=True)
+        self.root.after(REQUEST_MS, self._check_requests)
         self.radio.start()
+        self.transcriber.start()
+        self._queue_untranscribed()
+        self.root.after(0, self._sweep)
         self.root.after(PUMP_MS, self._pump)
+        if self.open_first:
+            self.root.after(200, lambda: self.open(self.open_first or ""))
         self.root.lift()
         self.root.attributes("-topmost", True)
         self.root.after(800, lambda: self.root.attributes("-topmost", False))
@@ -609,5 +976,13 @@ class InputWindow:
         return 0
 
 
-def run(app: SidebandApp, address: str | None) -> int:
-    return InputWindow(app, address).run()
+def run(app: SidebandApp, address: str | None, open_app: str | None = None) -> int:
+    code = Hub(app, address, open_app).run()
+    # Bluetooth (CoreBluetooth) and model threads can still be running here, and Python's
+    # interpreter teardown then crashes with SIGTRAP ("Python quit unexpectedly"). Everything
+    # worth keeping is already on disk, so leave without the teardown.
+    import sys
+
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os._exit(code)

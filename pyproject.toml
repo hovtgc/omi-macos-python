@@ -11,6 +11,8 @@ dependencies = ["bleak>=0.22"]
 audio = ["av>=12"]
 firmware = ["smpclient>=7"]
 voice = ["vosk>=0.3.44", "av>=12"]
+transcribe = ["mlx-whisper>=0.4", "av>=12"]
+llm = ["mlx-lm>=0.20"]
 
 [project.scripts]
 sideband = "sideband.cli:main"

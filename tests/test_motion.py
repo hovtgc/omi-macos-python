@@ -2,13 +2,26 @@ import math
 import struct
 import unittest
 
-from sideband.motion import ACCEL_LSB, G, Motion, Tilt, parse_motion
+from sideband.motion import ACCEL_LSB, G, Motion, ShakeDetector, Tilt2D, parse_motion
 
 
-def tilted(deg: float) -> Motion:
-    """Gravity rotated `deg` about the y axis, pendant otherwise still."""
+def rotate(v: tuple[float, float, float], axis: str, deg: float) -> tuple[float, float, float]:
     r = math.radians(deg)
-    return Motion(G * math.sin(r), 0.0, G * math.cos(r), 0.0, 0.0, 0.0)
+    c, n = math.cos(r), math.sin(r)
+    x, y, z = v
+    if axis == "x":
+        return x, y * c - z * n, y * n + z * c
+    if axis == "y":
+        return x * c + z * n, y, -x * n + z * c
+    return x * c - y * n, x * n + y * c, z
+
+
+def still(g: tuple[float, float, float]) -> Motion:
+    return Motion(g[0], g[1], g[2], 0.0, 0.0, 0.0)
+
+
+FLAT = (0.0, 0.0, -G)  # lying face down, as measured on the pendant
+HANGING = (0.0, -G, 0.0)  # hanging on its cord
 
 
 class ParseTest(unittest.TestCase):
@@ -31,24 +44,67 @@ class ParseTest(unittest.TestCase):
 
 
 class TiltTest(unittest.TestCase):
-    def test_zero_at_rest_and_signed(self) -> None:
-        tilt = Tilt(smooth=1.0)
-        self.assertAlmostEqual(tilt.update(tilted(0)), 0.0)
-        self.assertAlmostEqual(tilt.update(tilted(15)), 0.5, places=3)
-        self.assertAlmostEqual(tilt.update(tilted(-60)), -1.0)
-        tilt.invert = True
-        self.assertAlmostEqual(tilt.update(tilted(15)), -0.5, places=3)
+    def test_zero_at_rest_and_proportional(self) -> None:
+        tilt = Tilt2D(smooth=1.0)
+        self.assertEqual(tilt.update(still(FLAT)), (0.0, 0.0))
+        x, y = tilt.update(still(rotate(FLAT, "y", 12.5)))
+        self.assertAlmostEqual(abs(x) + abs(y), 0.5, places=2)  # 12.5 of 25 degrees, on one axis
 
-    def test_relative_to_calibration(self) -> None:
-        tilt = Tilt(smooth=1.0)
-        tilt.calibrate(tilted(20))
-        self.assertAlmostEqual(tilt.update(tilted(20)), 0.0)
-        self.assertAlmostEqual(tilt.update(tilted(35)), 0.5, places=3)
+    def test_held_in_hand_needs_no_calibration(self) -> None:
+        """Right side down steers right and far edge down steers forward, for the natural grips."""
+        grips = {
+            # grip: (resting reading, roll-right as (axis, degrees), tilt-forward as (axis, degrees))
+            # Readings point "up". Right edge down: up leans to -x (face up). Far edge down: up leans to -y.
+            "flat, face up": ((0.0, 0.0, G), ("y", -15), ("x", 15)),
+            # Face down the pendant's x and z point the other way, so the same hand motions mirror.
+            "flat, face down": ((0.0, 0.0, -G), ("y", -15), ("x", -15)),
+            # Upright facing you: y up, z toward you; rolling clockwise leans up toward -x.
+            "upright, facing you": ((0.0, G, 0.0), ("z", 15), ("x", 15)),
+        }
+        for name, (rest, (roll_axis, roll), (pitch_axis, pitch)) in grips.items():
+            tilt = Tilt2D(smooth=1.0)
+            tilt.update(still(rest))
+            x, y = tilt.update(still(rotate(rest, roll_axis, roll)))
+            self.assertAlmostEqual(x, 0.6, places=2, msg=f"{name}: right")
+            self.assertAlmostEqual(y, 0.0, places=2, msg=f"{name}: right")
+            x, y = tilt.update(still(rotate(rest, pitch_axis, pitch)))
+            self.assertAlmostEqual(y, 0.6, places=2, msg=f"{name}: forward")
+            self.assertAlmostEqual(x, 0.0, places=2, msg=f"{name}: forward")
+
+    def test_wizard_orients_both_axes(self) -> None:
+        for rest, right_axis, forward_axis in ((FLAT, "y", "x"), (HANGING, "z", "x")):
+            tilt = Tilt2D(smooth=1.0)
+            tilt.learn("rest", still(rest))
+            self.assertFalse(tilt.learn("right", still(rotate(rest, right_axis, 3))))  # too small to read
+            self.assertTrue(tilt.learn("right", still(rotate(rest, right_axis, 20))))
+            self.assertTrue(tilt.learn("forward", still(rotate(rest, forward_axis, 20))))
+            x, y = tilt.update(still(rotate(rest, right_axis, 15)))
+            self.assertAlmostEqual(x, 0.6, places=2)
+            self.assertAlmostEqual(y, 0.0, places=2)
+            x, y = tilt.update(still(rotate(rest, forward_axis, -15)))
+            self.assertAlmostEqual(y, -0.6, places=2)
+            self.assertAlmostEqual(x, 0.0, places=2)
+
+    def test_settings_round_trip(self) -> None:
+        tilt = Tilt2D(swap=True, invert_y=True)
+        other = Tilt2D()
+        other.load(tilt.settings())
+        self.assertEqual(other.settings(), {"swap": True, "invert_x": False, "invert_y": True})
 
     def test_smoothing(self) -> None:
-        tilt = Tilt(smooth=0.5)
-        tilt.calibrate(tilted(0))
-        self.assertAlmostEqual(tilt.update(tilted(30)), 0.5, places=3)
+        tilt = Tilt2D(smooth=0.5)
+        tilt.calibrate(still(FLAT))
+        tilt.update(still(rotate(FLAT, "y", 25)))
+        self.assertAlmostEqual(abs(tilt.x) + abs(tilt.y), 0.5, places=2)
+
+
+class ShakeTest(unittest.TestCase):
+    def test_jolt_and_twist_with_cooldown(self) -> None:
+        shake = ShakeDetector()
+        self.assertFalse(shake.feed(still(FLAT), 0.0))
+        self.assertTrue(shake.feed(Motion(0, 0, -G - 9, 0, 0, 0), 1.0))
+        self.assertFalse(shake.feed(Motion(0, 0, -G - 9, 0, 0, 0), 1.2))  # cooling down
+        self.assertTrue(shake.feed(Motion(0, 0, -G, 7.0, 0, 0), 2.0))
 
 
 if __name__ == "__main__":
