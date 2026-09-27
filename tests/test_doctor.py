@@ -19,6 +19,8 @@ class DoctorTest(unittest.TestCase):
         text = "\n".join(pendant_lines(stock))
         self.assertIn("firmware 3.0.21", text)
         self.assertIn("ONBOARDING.md step 7", text)
+        self.assertNotIn("charging", text)
+        self.assertIn("⚡ charging", "\n".join(pendant_lines(dict(stock, charging=b"\x01"))))
         moving = dict(stock, features=bytes.fromhex("ee010000"))
         self.assertIn("tilt games work", "\n".join(pendant_lines(moving)))
         other = dict(stock, model=b"Omi DevKit 2")

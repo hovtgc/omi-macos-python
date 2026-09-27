@@ -10,7 +10,9 @@ from sideband.inputs import (
     Mapping,
     action_command,
     button_code,
+    battery_text,
     button_kind,
+    charging_from,
     installed_apps,
     keystroke_script,
 )
@@ -25,6 +27,16 @@ class ButtonTest(unittest.TestCase):
         self.assertEqual(button_kind(5), "release")
         self.assertEqual(button_kind(9), "code-9")
         self.assertIsNone(button_code(b""))
+
+
+class ChargingTest(unittest.TestCase):
+    def test_flag_and_text(self) -> None:
+        self.assertTrue(charging_from(b"\x01"))
+        self.assertFalse(charging_from(b"\x00"))
+        self.assertIsNone(charging_from(b""))
+        self.assertEqual(battery_text(76, True), "battery 76% ⚡ charging")
+        self.assertEqual(battery_text(76, False), "battery 76%")
+        self.assertEqual(battery_text(None, None), "battery —")
 
 
 class DecoderTest(unittest.TestCase):

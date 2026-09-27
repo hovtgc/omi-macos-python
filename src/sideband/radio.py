@@ -59,6 +59,7 @@ FACT_UUIDS = {
     "hardware": "00002a27-0000-1000-8000-00805f9b34fb",
     "battery": BATTERY_LEVEL_UUID,
     "features": "19b10021-e8f2-537e-4f6c-d104768a1214",
+    "charging": "19b10013-e8f2-537e-4f6c-d104768a1214",
 }
 MOTION_SERVICE = "32403790-0000-1000-7450-bf445e5829a2"
 
