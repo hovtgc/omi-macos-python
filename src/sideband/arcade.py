@@ -206,6 +206,7 @@ class ArcadeWindow:
         self.glow = list(self._box(self.selected))  # the selection frame, eased toward the chosen item
         self._background()
         self.top.bind("<KeyPress>", self._key)
+        self.canvas.bind("<Button-1>", self._click)
         # Calibrate straight away: the full wizard the first time, then just "hold still".
         self._start_calibration(full=not self.hub.tilt_calibrated())
         self._last = time.monotonic()
@@ -346,6 +347,17 @@ class ArcadeWindow:
             self.hub.set_setting("arcade_sound", on)
             self._toast("sound on" if on else "sound off")
 
+    def _click(self, event: tk.Event) -> None:
+        """The mouse works too: click ⟲ to recalibrate, click a game to play it."""
+        if self.step is not None:
+            return
+        for item in (RECAL, *range(len(GAMES))):
+            x0, y0, x1, y1 = self._box(item)
+            if x0 <= event.x <= x1 and y0 <= event.y <= y1:
+                self._select(item)
+                self.on_tap("single")
+                return
+
     def refresh_scores(self) -> None:
         pass  # scores are read fresh every frame
 
@@ -401,8 +413,9 @@ class ArcadeWindow:
         x0, y0, x1, y1 = RECAL_BOX
         chosen = self.selected == RECAL
         round_rect(c, x0, y0, x1, y1, 20, fill="#ff4fd8" if chosen else "#1b0540", outline=NEON, width=2, tags="dyn")
-        label = "⟲ RECALIBRATE" if chosen else "▲ ⟲ RECALIBRATE"
-        c.create_text((x0 + x1) / 2, (y0 + y1) / 2, text=label, fill="#ffffff", font=("Helvetica", 15, "bold"), tags="dyn")
+        c.create_text((x0 + x1) / 2, (y0 + y1) / 2, text="⟲ RECALIBRATE", fill="#ffffff", font=("Helvetica", 15, "bold"), tags="dyn")
+        hint = "● TAP to start it" if chosen else "tilt up from the top row · or click"
+        c.create_text((x0 + x1) / 2, y1 + 13, text=hint, fill="#ffffff" if chosen else "#cfc4ff", font=("Helvetica", 11, "bold"), tags="dyn")
 
     def _frame(self) -> None:
         """The selection frame: neon rings that glide from item to item."""
@@ -475,6 +488,8 @@ class ArcadeWindow:
             c.create_oval(gx + dx - 6, cy + dy - 6, gx + dx + 6, cy + dy + 6, fill=colour, outline="", tags="dyn")
             left = 130
         items = legend("menu", motion=stick is not None)
+        if self.selected == RECAL:  # say what the tap does here
+            items = tuple(("tap", "RECALIBRATE") if control == "tap" else (control, label) for control, label in items)
         draw_legend(c, (left + AW - 40) / 2, cy, items, size=16, max_width=AW - 40 - left - 30)
         c.create_text(AW - 44, AH - 7, anchor="e", text="keys: arrows move · space play · esc next · C recalibrate · M sound",
                       fill="#7a6a9a", font=("Helvetica", 10), tags="dyn")
