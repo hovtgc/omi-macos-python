@@ -179,6 +179,72 @@ def summary_of(markdown: str) -> str | None:
     return markdown.split(SUMMARY_START, 1)[1].split(SUMMARY_END, 1)[0].strip()
 
 
+ARCADE_ACTIONS = ("recalibrate", "close", "help", "none")
+THIS_WORDS = {"this", "that", "it", "one", "again", "selected", "highlighted"}
+
+
+def arcade_messages(heard: str, games: list[tuple[str, str, str]], selected: str | None) -> list[dict[str, str]]:
+    """Ask which Arcade action a spoken request means. `games` is (key, title, what it is)."""
+    listing = "\n".join(f"- {key}: {title.title()} ({how})" for key, title, how in games)
+    focus = next((title.title() for key, title, _how in games if key == selected), None)
+    return [
+        {
+            "role": "system",
+            "content": (
+                "You are the voice menu of the Omi Arcade, a set of small games. The player said something out loud. "
+                "Speech recognition is rough and often mishears game names (sky ace may come out as 'skies', "
+                "'a's', 'sky a' or 'ski ace'; corn maze as 'con maze' or 'corn may'), so match by sound and meaning.\n"
+                f"Games:\n{listing}\n"
+                f"Highlighted game: {focus or 'none'}. Words like 'this', 'that', 'it', 'this one' or 'again' mean the highlighted game.\n"
+                "Reply with exactly one line, nothing else:\n"
+                "play <key>  (start that game)\n"
+                "show <key>  (only when they ask a question about a game; just naming a game means play it)\n"
+                "recalibrate  (fix, reset or calibrate the tilt controls)\n"
+                "close  (leave or close the arcade)\n"
+                "help  (they ask what they can say or which games there are)\n"
+                "none  (anything else)\n"
+                "Examples: 'play a's' -> play fighter. 'I want to shoot some planes' -> play fighter. "
+                "'the pumpkin one' -> play corn. 'what's star dodger' -> show dodger. 'play this' -> play <the highlighted key>. "
+                "'the controls feel off' -> recalibrate. 'what can I play' -> help. 'nice weather' -> none."
+            ),
+        },
+        {"role": "user", "content": heard},
+    ]
+
+
+def parse_arcade(reply: str, keys: list[str], selected: str | None) -> str:
+    """The model's line as `play:<key>`, `show:<key>`, one of ARCADE_ACTIONS, or `none`."""
+    words = reply.strip().lower().replace("<", " ").replace(">", " ").replace(":", " ").split()
+    if not words:
+        return "none"
+    verb = words[0]
+    if verb in ("play", "show"):
+        key = next((w for w in words[1:] if w in keys), None)
+        if key is None and selected in keys and (len(words) == 1 or set(words[1:]) & THIS_WORDS):
+            key = selected
+        return f"{verb}:{key}" if key else "none"
+    return verb if verb in ARCADE_ACTIONS else "none"
+
+
+def guess_arcade(heard: str, names: dict[str, str], selected: str | None) -> str:
+    """No model at hand: keywords. `names` maps spoken words (sky, corn, dodger…) to game keys."""
+    words = heard.lower().replace("'", "").split()
+    said = set(words)
+    if any("calibrat" in w for w in words) or {"reset", "fix"} & said:
+        return "recalibrate"
+    if said & {"close", "quit", "exit", "leave"}:
+        return "close"
+    if "help" in said or {"what", "can"} <= said:
+        return "help"
+    for word in words:
+        if word in names:
+            return f"play:{names[word]}"
+    this = bool(said & THIS_WORDS) or words == ["play"]
+    if selected and said & {"play", "start", "go"} and this:
+        return f"play:{selected}"
+    return "none"
+
+
 @dataclass
 class Job:
     messages: list[dict[str, str]]

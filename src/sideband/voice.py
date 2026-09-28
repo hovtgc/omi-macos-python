@@ -3,7 +3,8 @@
 Two vocabularies: the Voice Flap game ("go left / right / up / down / stop") and the launcher's
 voice menu ("open arcade", "play marble", "start recording", "close", …). Vosk (the `voice` extra)
 runs with a grammar of just those words, so it answers fast and does not turn random speech into
-commands. PCM from the pendant (16 kHz mono s16) goes in; commands come out. `CommandSpotter`,
+commands. The Arcade listens with an open vocabulary instead (`free`): the local LLM reads what was said
+in the menu, and `ingame_command` picks "exit game" / "pause" / "play again" out of speech during a game. PCM from the pendant (16 kHz mono s16) goes in; commands come out. `CommandSpotter`,
 `menu_command` and `MenuSpotter` are the pure parts.
 """
 
@@ -18,8 +19,8 @@ from typing import Callable
 
 from sideband.protocol import PCM_RATE_HZ
 
-COMMANDS = ("left", "right", "up", "down", "stop")
-GRAMMAR = ["go", *COMMANDS, "[unk]"]
+COMMANDS = ("left", "right", "up", "down", "stop", "exit", "quit")  # exit / quit leave Voice Flap
+GRAMMAR = ["go", *COMMANDS, "game", "[unk]"]
 MODEL_NAME = "vosk-model-small-en-us-0.15"
 MODEL_URL = f"https://alphacephei.com/vosk/models/{MODEL_NAME}.zip"
 
@@ -108,6 +109,23 @@ class MenuSpotter:
         return out
 
 
+EXIT_WORDS = {"exit", "quit", "leave"}
+
+
+def ingame_command(text: str) -> str | None:
+    """A phrase said during an Arcade game (free-form speech): `exit`, `pause` or `go` (start, resume,
+    play again). None for anything else, so chatter while playing does nothing."""
+    words = text.lower().replace("'", "").split()
+    said = set(words)
+    if said & EXIT_WORDS or "main menu" in text.lower() or ({"back", "menu"} <= said) or ({"back", "arcade"} <= said):
+        return "exit"
+    if said & {"pause", "wait", "hold"}:
+        return "pause"
+    if said & {"resume", "continue", "again", "restart", "unpause"} or words[:2] in (["start"], ["play"], ["go"], ["lets", "go"]):
+        return "go"
+    return None
+
+
 def model_path(support_dir: Path) -> Path:
     return support_dir / "models" / MODEL_NAME
 
@@ -121,11 +139,13 @@ class VoiceListener(threading.Thread):
         on_command: Callable[[str], None],
         on_text: Callable[[str], None],
         menu: bool = False,
+        free: bool = False,
     ) -> None:
         super().__init__(daemon=True)
         self.model_dir = model_dir
         self.on_command = on_command
         self.on_text = on_text
+        self.free = free  # open vocabulary: every partial goes to on_text, each finished phrase to on_command
         self.grammar = MENU_WORDS if menu else GRAMMAR
         self.make_spotter = MenuSpotter if menu else CommandSpotter
         self.spotter = self.make_spotter()
@@ -153,7 +173,8 @@ class VoiceListener(threading.Thread):
             self.on_text(self.error)
             return
         vosk.SetLogLevel(-1)
-        recognizer = vosk.KaldiRecognizer(vosk.Model(str(self.model_dir)), PCM_RATE_HZ, json.dumps(self.grammar))
+        model = vosk.Model(str(self.model_dir))
+        recognizer = vosk.KaldiRecognizer(model, PCM_RATE_HZ) if self.free else vosk.KaldiRecognizer(model, PCM_RATE_HZ, json.dumps(self.grammar))
         self.on_text("listening")
         while True:
             pcm = self._audio.get()
@@ -162,6 +183,16 @@ class VoiceListener(threading.Thread):
             if not pcm:  # reset marker
                 recognizer.Reset()
                 self.spotter = self.make_spotter()
+                continue
+            if self.free:
+                if recognizer.AcceptWaveform(pcm):
+                    text = json.loads(recognizer.Result()).get("text", "")
+                    if text:
+                        self.on_command(text)
+                else:
+                    text = json.loads(recognizer.PartialResult()).get("partial", "")
+                    if text:
+                        self.on_text(text)
                 continue
             if recognizer.AcceptWaveform(pcm):
                 text = json.loads(recognizer.Result()).get("text", "")

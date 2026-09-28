@@ -1,7 +1,8 @@
 """The Arcade's button legend: what each pendant control does right now, drawn the same way everywhere.
 
 Every control has one colour and one keycap, in the menu and in every game:
-● TAP (green) goes forward, ●● DOUBLE (amber) goes back, TILT (pink) moves, HOLD (blue) pauses.
+● TAP (green) goes forward, ●● DOUBLE (amber) goes back, TILT (pink) moves, HOLD (blue) pauses,
+“ SAY ” (mint) is something to say out loud.
 `legend` is pure (which controls to show for a game and state); `draw_legend` draws them as chips.
 """
 
@@ -21,10 +22,10 @@ CONTROLS = {
 }
 
 PLAY = {
-    "menu": (("tilt", "MOVE"), ("tap", "PLAY"), ("double", "NEXT"), ("hold", "RECENTRE")),
+    "menu": (("tap", "TALK"), ("say", "PLAY SKY ACE · PLAY THIS · RECALIBRATE")),
     "fighter": (("tilt", "FLY"), ("tap", "FIRE"), ("double", "BURST"), ("shake", "ROLL"), ("hold", "PAUSE")),
     "flap": (("tilt", "STEER"), ("tap", "FLAP"), ("double", "BIG FLAP"), ("hold", "PAUSE")),
-    "voice": (("tap", "MIC ON / OFF"), ("say", "GO LEFT · RIGHT · UP · DOWN"), ("hold", "PAUSE")),
+    "voice": (("tap", "MIC ON / OFF"), ("say", "GO LEFT · RIGHT · UP · DOWN · EXIT"), ("hold", "PAUSE")),
     "corn": (("tilt", "ROLL"), ("tap", "BRAKE"), ("hold", "PAUSE")),
     "dodger": (("tilt", "FLY"), ("tap", "FIRE"), ("shake", "BOMB"), ("hold", "PAUSE")),
     "catch": (("tilt", "MOVE"), ("hold", "PAUSE")),
@@ -36,14 +37,15 @@ def legend(game: str, state: str = "playing", motion: bool = True) -> tuple[tupl
     """The controls to show for `game` ("menu" or a game key) in `state`, as (control, label) pairs.
 
     Outside play every game is the same: one tap goes forward, a double tap goes back to the Arcade.
+    The mic stays on in every game, so saying "exit game" also goes back.
     """
-    if game == "menu" or state == "playing":
-        items = PLAY[game]
+    if game == "menu":
+        return PLAY[game]
+    if state == "playing":
+        items = PLAY[game] + ((("say", "EXIT GAME"),) if game != "voice" else ())
     else:
-        items = (("tap", STATES[state]), ("double", "ARCADE"))
-    if game == "menu" and not motion:
-        items = tuple(item for item in items if item[0] not in ("tilt", "hold"))
-    elif not motion:  # arrow keys stand in for tilt
+        items = (("tap", STATES[state]), ("double", "ARCADE"), ("say", "EXIT GAME"))
+    if not motion:  # arrow keys stand in for tilt
         items = tuple((control, f"{label} · ARROWS" if control == "tilt" else label) for control, label in items)
     return items
 

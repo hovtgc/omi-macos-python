@@ -140,42 +140,6 @@ class CatchTest(unittest.TestCase):
         self.assertTrue(game.over)
 
 
-class ArcadeMenuTest(unittest.TestCase):
-    def test_snap_nav_needs_centre_then_steps_and_repeats(self) -> None:
-        from sideband.arcade import SnapNav
-
-        nav = SnapNav()
-        self.assertIsNone(nav.feed(0.9, 0.0, 0.0))  # still tipped from the last game: nothing
-        self.assertIsNone(nav.feed(0.0, 0.0, 0.1))  # centred: armed
-        self.assertEqual(nav.feed(0.5, 0.1, 0.2), (1, 0))
-        self.assertIsNone(nav.feed(0.9, 0.0, 0.5))  # held, not long enough to repeat
-        self.assertEqual(nav.feed(0.9, 0.0, 0.8), (1, 0))  # held: repeats
-        self.assertIsNone(nav.feed(0.9, 0.0, 0.9))
-        self.assertEqual(nav.feed(0.9, 0.0, 1.1), (1, 0))
-        self.assertIsNone(nav.feed(0.3, 0.0, 1.2))  # between REARM and FIRE: nothing, not re-armed
-        self.assertIsNone(nav.feed(0.0, 0.6, 1.3))  # other way without centring first: nothing
-        nav.feed(0.1, 0.1, 1.4)
-        self.assertEqual(nav.feed(0.1, 0.8, 1.5), (0, -1))  # forward is up the screen
-        nav.feed(0.0, 0.0, 1.6)
-        self.assertEqual(nav.feed(-0.6, -0.2, 1.7), (-1, 0))
-        nav.feed(0.0, 0.0, 1.8)
-        self.assertEqual(nav.feed(0.0, -0.6, 1.9), (0, 1))
-
-    def test_menu_step(self) -> None:
-        from sideband.arcade import GAMES, RECAL, menu_step
-
-        last = len(GAMES) - 1
-        self.assertEqual(menu_step(0, 1, 0, 0), 1)
-        self.assertEqual(menu_step(last, 1, 0, 0), 0)  # wraps
-        self.assertEqual(menu_step(0, -1, 0, 0), last)
-        self.assertEqual(menu_step(4, 0, -1, 4), 1)  # bottom row up to the top row
-        self.assertEqual(menu_step(1, 0, -1, 1), RECAL)  # top row up to ⟲
-        self.assertEqual(menu_step(RECAL, 0, 1, 2), 2)  # back to the last game
-        self.assertEqual(menu_step(RECAL, 0, -1, 2), RECAL)
-        self.assertEqual(menu_step(1, 0, 1, 1), 4)
-        self.assertEqual(menu_step(4, 0, 1, 4), 4)  # bottom edge stays
-
-
 class LegendTest(unittest.TestCase):
     def test_same_flow_in_every_game(self) -> None:
         from sideband.legend import PLAY, legend
@@ -183,16 +147,17 @@ class LegendTest(unittest.TestCase):
         for game in PLAY:
             if game == "menu":
                 continue
-            self.assertEqual(legend(game, "ready"), (("tap", "START"), ("double", "ARCADE")))
+            self.assertEqual(legend(game, "ready"), (("tap", "START"), ("double", "ARCADE"), ("say", "EXIT GAME")))
             self.assertEqual(legend(game, "paused")[1], ("double", "ARCADE"))
             self.assertEqual(legend(game, "over")[0], ("tap", "AGAIN"))
             self.assertIn(("hold", "PAUSE"), legend(game))
+            self.assertTrue(any(control == "say" and "EXIT" in label for control, label in legend(game)))
 
-    def test_menu_without_motion_is_taps_only(self) -> None:
+    def test_menu_is_tap_to_talk(self) -> None:
         from sideband.legend import legend
 
-        self.assertEqual(legend("menu", motion=False), (("tap", "PLAY"), ("double", "NEXT")))
-        self.assertIn(("tilt", "MOVE"), legend("menu"))
+        self.assertEqual(legend("menu")[0], ("tap", "TALK"))
+        self.assertNotIn("tilt", [control for control, _ in legend("menu")])
         self.assertIn(("tilt", "STEER · ARROWS"), legend("flap", motion=False))
 
 

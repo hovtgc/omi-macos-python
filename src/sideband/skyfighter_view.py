@@ -91,6 +91,10 @@ class FighterWindow:
         self.state = "playing"
         self.game.started = True
 
+    @property
+    def playing(self) -> bool:
+        return self.state == "playing"
+
     def on_shake(self) -> None:
         if self.state == "playing":
             self.game.barrel_roll()
