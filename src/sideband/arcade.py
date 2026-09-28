@@ -1,9 +1,12 @@
 """Omi Arcade: a neon game menu played entirely with the pendant, and the mini game windows.
 
-On open it calibrates motion (hold still, tilt right, tilt forward; after the first time just hold still),
-and again, quickly, every time you come back from a game. Then the pendant is a menu joystick: flick it
-toward a game to move one tile, one tap plays, a double tap goes to the next game (so taps alone work
-without motion), hold recentres, and ⟲ (up from the top row) runs the full calibration. Every game shares
+On open it calibrates motion, and every step waits for one tap to lock it in: hold the pendant how you'll
+play and tap, then (the first time) tilt right and tap, tilt forward and tap. After the first time, and
+every time you come back from a game, it is just "hold it how you'll play, tap". The tap uses the median
+of the last second of motion, so the press itself does not skew it. Then the pendant is a menu d-pad:
+tip it toward a game to move one tile (keep holding to keep moving), one tap plays, a double tap goes to
+the next game (so taps alone work without motion), hold recentres, and ⟲ (up from the top row) runs the
+full calibration. Every game shares
 the same flow: one tap to start, resume or play again, double tap back to the Arcade, hold to pause.
 The legend at the bottom (`legend.py`) always says what each control does right now.
 """
@@ -51,9 +54,7 @@ GAMES = (
 AW, AH = 1040, 700
 RECAL = len(GAMES)  # the ⟲ RECALIBRATE button, selectable like a tile
 RECAL_BOX = (AW - 250, 20, AW - 24, 62)
-REST_S = 1.0
-QUICK_REST_S = 0.6
-PINNED_S = 1.5
+MIN_TILT_DEG = 8.0  # how far "tilt right" / "tilt forward" must go before a tap locks it
 SOUNDS = {"move": "Pop", "back": "Bottle", "play": "Hero", "step": "Tink", "done": "Glass", "recal": "Purr"}
 
 
@@ -133,33 +134,42 @@ def _icon(c: tk.Canvas, kind: str, x: float, y: float, s: float, tag: str) -> No
 
 
 WIZARD = (
-    ("rest", "HOLD STILL", "Hold the Omi like a joystick, the way you'll play"),
-    ("right", "TILT RIGHT ▶", "Tip the right side down and hold"),
-    ("forward", "TILT FORWARD ▲", "Tip the far edge down and hold"),
+    ("rest", "HOLD IT HOW YOU PLAY", "get comfy, like a joystick, then tap once to lock it in"),
+    ("right", "TILT RIGHT ▶", "tip the right side down, keep it there, then tap"),
+    ("forward", "TILT FORWARD ▲", "tip the far edge down, keep it there, then tap"),
 )
 
 
 class SnapNav:
-    """Tilt as a menu joystick: a flick past FIRE moves one step, then come back past REARM for the next.
-
-    Starts disarmed, so a pendant still tipped from the last game moves nothing until it is centred.
+    """Tilt as a menu d-pad. Tip past FIRE: one step. Keep holding: a step every REPEAT_S after HOLD_S.
+    Come back inside REARM to move again. Starts disarmed, so a pendant still tipped from the last
+    game moves nothing until it has been centred once.
     """
 
-    FIRE, REARM = 0.5, 0.25
+    FIRE, REARM = 0.4, 0.2
+    HOLD_S, REPEAT_S = 0.55, 0.3
 
     def __init__(self) -> None:
         self.armed = False
+        self.held: tuple[int, int] | None = None
+        self.next_at = 0.0
 
-    def feed(self, x: float, y: float) -> tuple[int, int] | None:
+    def feed(self, x: float, y: float, now: float) -> tuple[int, int] | None:
         """(dx, dy) in screen steps (dy -1 is up, from tilting forward), or None."""
         reach = max(abs(x), abs(y))
-        if not self.armed:
-            self.armed = reach < self.REARM
+        if reach < self.REARM:
+            self.armed, self.held = True, None
             return None
         if reach < self.FIRE:
             return None
-        self.armed = False
-        return (1 if x > 0 else -1, 0) if abs(x) >= abs(y) else (0, -1 if y > 0 else 1)
+        way = (1 if x > 0 else -1, 0) if abs(x) >= abs(y) else (0, -1 if y > 0 else 1)
+        if self.armed:
+            self.armed, self.held, self.next_at = False, way, now + self.HOLD_S
+            return way
+        if way == self.held and now >= self.next_at:
+            self.next_at = now + self.REPEAT_S
+            return way
+        return None
 
 
 def menu_step(selected: int, dx: int, dy: int, last: int, cols: int = 3, count: int = len(GAMES)) -> int:
@@ -188,7 +198,6 @@ class ArcadeWindow:
         self.selected = 0
         self.last_game = 0
         self.nav = SnapNav()
-        self.pinned_since: float | None = None
         self.clock = 0.0
         self.toast: tuple[str, float] = ("", 0.0)
         self.stars = [(random.uniform(0, AW), random.uniform(0, AH * 0.55), random.uniform(0, math.tau)) for _ in range(120)]
@@ -234,9 +243,11 @@ class ArcadeWindow:
     # --- the Omi --------------------------------------------------------------------------
 
     def on_tap(self, kind: str) -> None:
-        if self.step is not None:
+        if self.step is not None:  # calibrating: tap locks this step, double tap keeps the old calibration
             if kind == "single":
-                self._finish_calibration("Skipped: using the last calibration")
+                self._lock()
+            else:
+                self._finish_calibration("Kept the last calibration")
             return
         if kind == "single":  # forward: play the game (or recalibrate) under the frame
             if self.selected == RECAL:
@@ -255,20 +266,44 @@ class ArcadeWindow:
         self._start_calibration(full=True)
 
     def returned(self, game: str) -> None:
-        """Back from a game: frame the game just played and recentre to the hand's new grip."""
+        """Back from a game: frame the game just played and re-lock the centre to the hand's grip."""
         keys = [g[0] for g in GAMES]
         if game in keys:
             self.selected = self.last_game = keys.index(game)
-        self._start_calibration(full=False, quick=True)
+        self._start_calibration(full=False)
 
-    def _start_calibration(self, full: bool, quick: bool = False) -> None:
-        if self.hub.latest_motion() is not None or full:
-            self._sfx("recal")
-        now = time.monotonic()
-        self.step, self.full, self.quick = 0, full, quick
-        self.step_since = self.step_started = now
+    def _start_calibration(self, full: bool) -> None:
+        self._sfx("recal")
+        self.step, self.full = 0, full
+        self.step_started = time.monotonic()
         self.nav = SnapNav()
-        self.pinned_since = None
+
+    def _lock(self) -> None:
+        """The tap: take the steady reading of the last second as this step's answer."""
+        sample = self.hub.steady_motion()
+        if sample is None:
+            self._finish_calibration("No motion stream · ● TAP plays · ●● DOUBLE goes to the next game")
+            return
+        name = WIZARD[self.step][0]
+        if name != "rest" and not self.hub.tilt.learn(name, sample, min_deg=MIN_TILT_DEG):
+            self._sfx("back")
+            self._toast("A little further, hold it, then tap")
+            return
+        if name == "rest":
+            self.hub.tilt.learn("rest", sample)
+        self.step += 1
+        if self.step >= len(WIZARD) or not self.full:
+            if self.full:
+                self.hub.save_tilt()
+            self._sfx("done")
+            self._finish_calibration("Locked ✓  tilt to move · ● TAP to play")
+        else:
+            self._sfx("step")
+
+    def _step_degrees(self) -> float | None:
+        """Live: how far the pendant is tipped from the locked rest, for the right / forward steps."""
+        sample = self.hub.latest_motion()
+        return None if sample is None else self.hub.tilt.degrees_from_rest(sample)
 
     def _select(self, item: int, wrap: bool = False) -> None:
         if wrap and item != RECAL:
@@ -285,29 +320,7 @@ class ArcadeWindow:
         sfx(name, bool(self.hub.settings.get("arcade_sound", True)))
 
     def on_motion(self, sample: Motion) -> None:
-        if self.step is None:
-            return
-        name = WIZARD[self.step][0]
-        if name == "rest":
-            still = math.sqrt(sample.gx ** 2 + sample.gy ** 2 + sample.gz ** 2) < 1.0
-            if not still:
-                self.step_since = time.monotonic()
-            if time.monotonic() - self.step_since < (QUICK_REST_S if self.quick else REST_S):
-                return
-        elif not self.hub.tilt.learn(name, sample, min_deg=14.0):
-            return
-        if name == "rest":
-            self.hub.tilt.learn("rest", sample)
-        self.step += 1
-        self.step_since = time.monotonic()
-        if self.step >= len(WIZARD) or not self.full:
-            if self.full:
-                self.hub.save_tilt()
-            self._sfx("done")
-            self._finish_calibration("Centred ✓  flick the Omi to move · ● TAP to play" if not self.full
-                                     else "Calibrated ✓  flick the Omi to move · ● TAP to play")
-        else:
-            self._sfx("step")
+        pass  # calibration waits for a tap; the hub keeps the recent samples
 
     def _finish_calibration(self, message: str) -> None:
         self.step = None
@@ -347,10 +360,9 @@ class ArcadeWindow:
             self._finish_calibration("No motion stream · ● TAP plays · ●● DOUBLE goes to the next game")
         stick = self.hub.stick()
         if stick is not None and self.step is None:
-            move = self.nav.feed(stick[0], stick[1])
+            move = self.nav.feed(stick[0], stick[1], now)
             if move is not None:
                 self._select(menu_step(self.selected, *move, self.last_game))
-            self._auto_recentre(stick, now)
         target = self._box(self.selected)
         ease = min(1.0, dt * 14)
         self.glow = [g + (t - g) * ease for g, t in zip(self.glow, target)]
@@ -369,24 +381,9 @@ class ArcadeWindow:
         text, at = self.toast
         if text and now - at < 2.6:
             fade = min(1.0, (now - at) / 2.6)
-            round_rect(c, AW / 2 - 330, 140, AW / 2 + 330, 178, 18, fill="#1b0540", outline=NEON, width=2, tags="dyn")
-            c.create_text(AW / 2, 159, text=text, fill=_mix((255, 255, 255), (255, 79, 216), fade), font=("Helvetica", 16, "bold"), tags="dyn")
-
-    def _auto_recentre(self, stick: tuple[float, float, str], now: float) -> None:
-        """Tilt jammed at an edge while the hand is still: the grip changed, so recentre."""
-        sample = self.hub.latest_motion()
-        still = sample is not None and math.sqrt(sample.gx ** 2 + sample.gy ** 2 + sample.gz ** 2) < 0.5
-        if max(abs(stick[0]), abs(stick[1])) > 0.85 and still:
-            if self.pinned_since is None:
-                self.pinned_since = now
-            elif now - self.pinned_since > PINNED_S:
-                self.hub.recentre()
-                self.pinned_since = None
-                self.nav = SnapNav()
-                self._sfx("done")
-                self._toast("Recentred to how you're holding it")
-        else:
-            self.pinned_since = None
+            ty = 159 if self.step is None else (AH / 2 + 222 if self.full else AH / 2 + 114)  # under the calibration card
+            round_rect(c, AW / 2 - 330, ty - 19, AW / 2 + 330, ty + 19, 18, fill="#1b0540", outline=NEON, width=2, tags="dyn")
+            c.create_text(AW / 2, ty, text=text, fill=_mix((255, 255, 255), (255, 79, 216), fade), font=("Helvetica", 16, "bold"), tags="dyn")
 
     def _status(self) -> None:
         c, hub = self.canvas, self.hub
@@ -485,38 +482,52 @@ class ArcadeWindow:
     def _calibration(self) -> None:
         c = self.canvas
         name, big, small = WIZARD[self.step or 0]
-        if self.quick:  # coming back from a game: a small card, not the whole wizard
-            round_rect(c, AW / 2 - 250, AH / 2 - 70, AW / 2 + 250, AH / 2 + 70, 26, fill="#1b0540", outline="#3ddc84", width=4, tags="dyn")
-            c.create_text(AW / 2, AH / 2 - 34, text="WELCOME BACK · RECENTRING", fill="#00e5ff", font=("Helvetica", 15, "bold"), tags="dyn")
-            c.create_text(AW / 2, AH / 2 + 4, text="hold the Omi how you'll play…", fill="#ffffff", font=("Helvetica", 20, "bold"), tags="dyn")
-            ring = (time.monotonic() - self.step_since) / QUICK_REST_S
-            c.create_rectangle(AW / 2 - 180, AH / 2 + 36, AW / 2 + 180, AH / 2 + 46, outline="#3ddc84", tags="dyn")
-            c.create_rectangle(AW / 2 - 180, AH / 2 + 36, AW / 2 - 180 + 360 * min(1.0, ring), AH / 2 + 46, fill="#3ddc84", outline="", tags="dyn")
+        sample = self.hub.latest_motion()
+        moving = sample is not None and math.sqrt(sample.gx ** 2 + sample.gy ** 2 + sample.gz ** 2) > 1.0
+        if not self.full:  # recentring (back from a game, or a hold): a small card
+            round_rect(c, AW / 2 - 290, AH / 2 - 86, AW / 2 + 290, AH / 2 + 86, 26, fill="#1b0540", outline="#3ddc84", width=4, tags="dyn")
+            c.create_text(AW / 2, AH / 2 - 52, text="RECENTRE", fill="#00e5ff", font=("Helvetica", 15, "bold"), tags="dyn")
+            c.create_text(AW / 2, AH / 2 - 16, text="hold the Omi how you'll play…", fill="#ffffff", font=("Helvetica", 22, "bold"), tags="dyn")
+            self._steady_badge(AW / 2, AH / 2 + 16, moving)
+            draw_legend(c, AW / 2, AH / 2 + 54, (("tap", "LOCK IT IN"), ("double", "KEEP OLD")), size=16)
             return
         c.create_rectangle(0, 0, AW, AH, fill="#0d0221", stipple="gray75", outline="", tags="dyn")
-        total = len(WIZARD) if self.full else 1
-        round_rect(c, AW / 2 - 330, AH / 2 - 170, AW / 2 + 330, AH / 2 + 170, 30, fill="#1b0540", outline=NEON, width=4, tags="dyn")
-        c.create_text(AW / 2, AH / 2 - 128, text=f"CALIBRATING · STEP {(self.step or 0) + 1} OF {total}", fill="#00e5ff", font=("Helvetica", 16, "bold"), tags="dyn")
+        round_rect(c, AW / 2 - 340, AH / 2 - 190, AW / 2 + 340, AH / 2 + 190, 30, fill="#1b0540", outline=NEON, width=4, tags="dyn")
+        c.create_text(AW / 2, AH / 2 - 150, text=f"CALIBRATING · STEP {(self.step or 0) + 1} OF {len(WIZARD)}", fill="#00e5ff", font=("Helvetica", 16, "bold"), tags="dyn")
         for dx, colour in ((3, "#ff2bd6"), (0, "#ffffff")):
-            c.create_text(AW / 2 + dx, AH / 2 - 70 + dx, text=big, fill=colour, font=("Helvetica", 44, "bold italic"), tags="dyn")
-        c.create_text(AW / 2, AH / 2 - 20, text=small, fill="#ffe66d", font=("Helvetica", 17, "bold"), tags="dyn")
+            c.create_text(AW / 2 + dx, AH / 2 - 98 + dx, text=big, fill=colour, font=("Helvetica", 42, "bold italic"), tags="dyn")
+        c.create_text(AW / 2, AH / 2 - 50, text=small, fill="#ffe66d", font=("Helvetica", 17, "bold"), tags="dyn")
         # the pendant as a disc that tilts the way we want
-        cx, cy = AW / 2, AH / 2 + 60
+        cx, cy = AW / 2 - 90, AH / 2 + 40
         wobble = math.sin(self.clock * 3)
         if name == "rest":
-            ring = (time.monotonic() - self.step_since) / REST_S
-            c.create_arc(cx - 46, cy - 46, cx + 46, cy + 46, start=90, extent=-360 * min(1.0, ring), style="arc", outline="#3ddc84", width=6, tags="dyn")
-            c.create_oval(cx - 30, cy - 30, cx + 30, cy + 30, fill="#e8e8f0", outline="#9c8cff", width=3, tags="dyn")
-        elif name == "right":
-            tilt = 0.5 + 0.3 * wobble
-            c.create_polygon(cx - 60, cy - 30 * tilt, cx + 60, cy + 30 * tilt, cx + 60, cy + 30 * tilt + 12, cx - 60, cy - 30 * tilt + 12,
-                             fill="#e8e8f0", outline="#9c8cff", width=3, tags="dyn")
-            c.create_text(cx + 110, cy, text="▶", fill=NEON, font=("Helvetica", 40, "bold"), tags="dyn")
+            c.create_oval(cx - 34, cy - 34, cx + 34, cy + 34, fill="#e8e8f0", outline="#9c8cff", width=3, tags="dyn")
+            self._steady_badge(AW / 2 + 90, cy, moving)
         else:
-            squash = 0.5 + 0.3 * wobble
-            c.create_oval(cx - 60, cy - 30 * squash, cx + 60, cy + 30 * squash, fill="#e8e8f0", outline="#9c8cff", width=3, tags="dyn")
-            c.create_text(cx, cy - 70, text="▲", fill=NEON, font=("Helvetica", 34, "bold"), tags="dyn")
-        draw_legend(c, AW / 2, AH / 2 + 140, (("tap", "SKIP"),), size=14)
+            if name == "right":
+                tilt = 0.5 + 0.3 * wobble
+                c.create_polygon(cx - 60, cy - 30 * tilt, cx + 60, cy + 30 * tilt, cx + 60, cy + 30 * tilt + 12, cx - 60, cy - 30 * tilt + 12,
+                                 fill="#e8e8f0", outline="#9c8cff", width=3, tags="dyn")
+                c.create_text(cx + 90, cy, text="▶", fill=NEON, font=("Helvetica", 30, "bold"), tags="dyn")
+            else:
+                squash = 0.5 + 0.3 * wobble
+                c.create_oval(cx - 60, cy - 30 * squash, cx + 60, cy + 30 * squash, fill="#e8e8f0", outline="#9c8cff", width=3, tags="dyn")
+                c.create_text(cx, cy - 56, text="▲", fill=NEON, font=("Helvetica", 30, "bold"), tags="dyn")
+            degrees = self._step_degrees()
+            if degrees is not None:  # live meter: fills up to "far enough"
+                ok = degrees >= MIN_TILT_DEG
+                bx, by, bw = AW / 2 + 20, cy - 8, 190
+                c.create_rectangle(bx, by, bx + bw, by + 16, outline="#9c8cff", width=2, tags="dyn")
+                c.create_rectangle(bx, by, bx + bw * min(1.0, degrees / (MIN_TILT_DEG * 2)), by + 16,
+                                   fill="#3ddc84" if ok else "#ffb020", outline="", tags="dyn")
+                c.create_line(bx + bw / 2, by - 5, bx + bw / 2, by + 21, fill="#ffffff", width=2, tags="dyn")
+                c.create_text(bx + bw / 2, by + 36, text=f"{degrees:.0f}°  {'✓ now tap' if ok else 'tip further'}",
+                              fill="#3ddc84" if ok else "#ffb020", font=("Helvetica", 15, "bold"), tags="dyn")
+        draw_legend(c, AW / 2, AH / 2 + 140, (("tap", "LOCK IT IN"), ("double", "SKIP")), size=17)
+
+    def _steady_badge(self, x: float, y: float, moving: bool) -> None:
+        text, colour = ("moving…", "#ffb020") if moving else ("steady ✓", "#3ddc84")
+        self.canvas.create_text(x, y, text=text, fill=colour, font=("Helvetica", 16, "bold"), tags="dyn")
 
     def close(self) -> None:
         self.top.after_cancel(self._job)

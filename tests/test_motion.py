@@ -107,5 +107,26 @@ class ShakeTest(unittest.TestCase):
         self.assertTrue(shake.feed(Motion(0, 0, -G, 7.0, 0, 0), 2.0))
 
 
+
+class SteadyTest(unittest.TestCase):
+    def test_median_ignores_a_button_jolt(self) -> None:
+        from sideband.motion import Motion, steady
+
+        held = [Motion(0.0, 0.0, 9.8, 0.0, 0.0, 0.0)] * 20
+        jolt = [Motion(6.0, -5.0, 3.0, 4.0, 4.0, 4.0)] * 4
+        self.assertEqual(steady(held[:10] + jolt + held[10:]), held[0])
+        self.assertIsNone(steady([]))
+
+    def test_degrees_from_rest(self) -> None:
+        from sideband.motion import Motion, Tilt2D
+
+        tilt = Tilt2D()
+        flat = Motion(0.0, 0.0, 9.8, 0.0, 0.0, 0.0)
+        self.assertIsNone(tilt.degrees_from_rest(flat))
+        tilt.calibrate(flat)
+        self.assertAlmostEqual(tilt.degrees_from_rest(flat), 0.0, places=3)
+        tipped = Motion(9.8 * math.sin(math.radians(10)), 0.0, 9.8 * math.cos(math.radians(10)), 0.0, 0.0, 0.0)
+        self.assertAlmostEqual(tilt.degrees_from_rest(tipped), 10.0, places=3)
+
 if __name__ == "__main__":
     unittest.main()

@@ -83,7 +83,7 @@ A connected pendant stops advertising. Close the window before `firmware` or `sc
 | `src/sideband/ui.py` | Launcher (`Hub`): the pendant connection, gesture actions, recorder, transcriber, assistant, voice menu, 24 h audio limit. |
 | `src/sideband/transcriber_app.py` | Transcriber window: record, read, summarize, ask. |
 | `src/sideband/controls.py` | Controls window: live inputs and the gesture map. |
-| `src/sideband/arcade.py` | Omi Arcade menu (tilt snap navigation, calibrates on open and on return from a game), mini game windows, Corn Maze art. |
+| `src/sideband/arcade.py` | Omi Arcade menu (tilt d-pad navigation; tap-to-lock calibration on open and on return from a game), mini game windows, Corn Maze art. |
 | `src/sideband/legend.py` | The control legend: which controls each game and state shows (pure), and the colour-coded chips. |
 | `src/sideband/skyfighter.py` | Sky Ace 1943 game state. Pure. |
 | `src/sideband/skyfighter_view.py` | Sky Ace 1943 software 3D renderer (Tk). |

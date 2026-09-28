@@ -141,21 +141,25 @@ class CatchTest(unittest.TestCase):
 
 
 class ArcadeMenuTest(unittest.TestCase):
-    def test_snap_nav_needs_centre_then_one_step_per_flick(self) -> None:
+    def test_snap_nav_needs_centre_then_steps_and_repeats(self) -> None:
         from sideband.arcade import SnapNav
 
         nav = SnapNav()
-        self.assertIsNone(nav.feed(0.9, 0.0))  # still tipped from the last game: nothing
-        self.assertIsNone(nav.feed(0.0, 0.0))  # centred: armed
-        self.assertEqual(nav.feed(0.7, 0.1), (1, 0))
-        self.assertIsNone(nav.feed(0.9, 0.0))  # held over: no repeat
-        self.assertIsNone(nav.feed(0.4, 0.0))  # not back far enough
-        self.assertIsNone(nav.feed(0.1, 0.1))
-        self.assertEqual(nav.feed(0.1, 0.8), (0, -1))  # forward is up the screen
-        nav.feed(0.0, 0.0)
-        self.assertEqual(nav.feed(-0.6, -0.2), (-1, 0))
-        nav.feed(0.0, 0.0)
-        self.assertEqual(nav.feed(0.0, -0.6), (0, 1))
+        self.assertIsNone(nav.feed(0.9, 0.0, 0.0))  # still tipped from the last game: nothing
+        self.assertIsNone(nav.feed(0.0, 0.0, 0.1))  # centred: armed
+        self.assertEqual(nav.feed(0.5, 0.1, 0.2), (1, 0))
+        self.assertIsNone(nav.feed(0.9, 0.0, 0.5))  # held, not long enough to repeat
+        self.assertEqual(nav.feed(0.9, 0.0, 0.8), (1, 0))  # held: repeats
+        self.assertIsNone(nav.feed(0.9, 0.0, 0.9))
+        self.assertEqual(nav.feed(0.9, 0.0, 1.1), (1, 0))
+        self.assertIsNone(nav.feed(0.3, 0.0, 1.2))  # between REARM and FIRE: nothing, not re-armed
+        self.assertIsNone(nav.feed(0.0, 0.6, 1.3))  # other way without centring first: nothing
+        nav.feed(0.1, 0.1, 1.4)
+        self.assertEqual(nav.feed(0.1, 0.8, 1.5), (0, -1))  # forward is up the screen
+        nav.feed(0.0, 0.0, 1.6)
+        self.assertEqual(nav.feed(-0.6, -0.2, 1.7), (-1, 0))
+        nav.feed(0.0, 0.0, 1.8)
+        self.assertEqual(nav.feed(0.0, -0.6, 1.9), (0, 1))
 
     def test_menu_step(self) -> None:
         from sideband.arcade import GAMES, RECAL, menu_step

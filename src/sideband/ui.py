@@ -37,7 +37,7 @@ from sideband.inputs import (
     button_kind,
     input_name,
 )
-from sideband.motion import MOTION_UUID, Motion, ShakeDetector, Tilt2D, parse_motion
+from sideband.motion import MOTION_UUID, Motion, ShakeDetector, Tilt2D, parse_motion, steady
 from sideband.protocol import AUDIO_CODEC_UUID, AUDIO_DATA_UUID, BATTERY_LEVEL_UUID, codec_name, strip_packet
 from sideband.llm import Doc, Job, LocalLLM, ask_all_messages, ask_messages, clean_summary, pick_context, summary_messages, transcript_text, with_summary
 from sideband.llm import callout_messages, callout_of, clean_callout, with_callout
@@ -48,6 +48,7 @@ from sideband.transcribe import Transcriber
 from sideband.voice import VoiceListener, model_path
 
 PUMP_MS = 10
+STEADY_S = 1.0  # recentring uses the median of this much motion
 SWEEP_MS = 10 * 60 * 1000  # check the 24-hour audio limit this often
 GREY = "#8a8f98"
 APPS = (
@@ -241,6 +242,7 @@ class Hub:
         self.shaker = ShakeDetector()
         self.last_motion: Motion | None = None
         self.motion_at = 0.0
+        self.recent_motion: list[tuple[float, Motion]] = []  # the last STEADY_S of samples
         self.motion_count = 0
         self.transcriber = Transcriber(lambda wav, md, msg: self.post("transcribed", wav, md, msg))
         self.rec_path: Path | None = None
@@ -803,8 +805,19 @@ class Hub:
     def latest_motion(self) -> Motion | None:
         return self.last_motion if time.monotonic() - self.motion_at < 0.5 else None
 
+    def steady_motion(self) -> Motion | None:
+        """How the pendant has been held over the last second, or None without a live motion stream."""
+        if self.latest_motion() is None:
+            return None
+        return steady([sample for _at, sample in self.recent_motion])
+
     def recentre(self) -> None:
-        self.tilt.rest = None  # the next sample becomes "level"
+        """Make the current grip "level", from the steady reading so a button press does not tilt it."""
+        sample = self.steady_motion()
+        if sample is None:
+            self.tilt.rest = None  # the next sample becomes "level"
+        else:
+            self.tilt.calibrate(sample)
 
     def _pendant_steer(self) -> tuple[float, str] | None:
         stick = self.stick()
@@ -891,6 +904,9 @@ class Hub:
             return
         self.tilt.update(sample)
         self.last_motion, self.motion_at = sample, at
+        self.recent_motion.append((at, sample))
+        while self.recent_motion and at - self.recent_motion[0][0] > STEADY_S:
+            self.recent_motion.pop(0)
         self.motion_count += 1
         if self.shaker.feed(sample, at):
             self.log("shake")
