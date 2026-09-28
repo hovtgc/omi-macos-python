@@ -40,6 +40,8 @@ from sideband.inputs import (
 from sideband.motion import MOTION_UUID, Motion, ShakeDetector, Tilt2D, parse_motion
 from sideband.protocol import AUDIO_CODEC_UUID, AUDIO_DATA_UUID, BATTERY_LEVEL_UUID, codec_name, strip_packet
 from sideband.llm import Doc, Job, LocalLLM, ask_all_messages, ask_messages, clean_summary, pick_context, summary_messages, transcript_text, with_summary
+from sideband.llm import callout_messages, callout_of, clean_callout, with_callout
+from sideband.speech import Speaker
 from sideband.llm import title as transcript_title
 from sideband.recordings import list_recordings, new_path
 from sideband.transcribe import Transcriber
@@ -51,12 +53,13 @@ GREY = "#8a8f98"
 APPS = (
     ("transcriber", "🎙", "Transcriber", "Record from your Omi or pick an audio file. Transcribed on this Mac."),
     ("controls", "🎛", "Controls", "Map taps to Mac actions and watch every live input."),
-    ("arcade", "🕹", "Arcade", "Omi Flap 3D, Voice Flap, Marble Maze, Star Dodger, Omi Catch."),
+    ("arcade", "🕹", "Arcade", "Sky Ace 1943, Omi Flap 3D, Corn Maze, Star Dodger, Omi Catch, Voice Flap. Played with the pendant."),
     ("bluetooth", "📶", "Bluetooth", "Connect, scan, switch pendants and debug the link."),
 )
 REQUEST_MS = 400  # how often the launcher checks for `sideband open <app>` requests
 MENU_LISTEN_S = 5.0
-MENU_HINT = "say: open transcriber · start recording · summarize that · open arcade · play marble · close"
+DEFAULT_SETTINGS = {"auto_summary": True, "speak_callout": True}
+MENU_HINT = "say: open transcriber · start recording · summarize that · open arcade · play sky ace · close"
 
 
 class Radio(threading.Thread):
@@ -254,6 +257,7 @@ class Hub:
         self.charging: bool | None = None
         self.game = None  # the open game window: Flap, Voice Flap or a mini game
         self.game_name = ""
+        self.last_tap_at = 0.0
         self.menu_voice: VoiceListener | None = None
         self.menu_until: float | None = None
         self.menu_mic_was_on = False
@@ -261,6 +265,7 @@ class Hub:
         self.llm: LocalLLM | None = None
         self.job_ids = 0
         self.settings = self._load_settings()
+        self.speaker = Speaker()
         self.last_audio = (0, time.monotonic())
 
         self.root = tk.Tk()
@@ -437,9 +442,9 @@ class Hub:
 
     def _load_settings(self) -> dict[str, object]:
         try:
-            return {"auto_summary": True, **json.loads(self._settings_path.read_text(encoding="utf-8"))}
+            return {**DEFAULT_SETTINGS, **json.loads(self._settings_path.read_text(encoding="utf-8"))}
         except (OSError, ValueError, TypeError):
-            return {"auto_summary": True}
+            return dict(DEFAULT_SETTINGS)
 
     def set_setting(self, key: str, value: object) -> None:
         self.settings[key] = value
@@ -487,6 +492,35 @@ class Hub:
             messages = ask_all_messages(question, pick_context(docs))
         self.llm_status.set("assistant: thinking…")
         return self._job(messages, "llm_answer", max_tokens=500)
+
+    def callout(self, transcript: Path, speak: bool = True) -> int | None:
+        """A short spoken summary of one recording, written for the ear, then read aloud."""
+        text = transcript_text(transcript.read_text(encoding="utf-8"))
+        if not text:
+            return None
+        self.llm_status.set("assistant: writing the callout…")
+        return self._job(callout_messages(text), "llm_callout", transcript, speak, max_tokens=120)
+
+    def speak_recording(self, transcript: Path) -> int | None:
+        """Speak a recording's callout, writing one first if it has none."""
+        stored = callout_of(transcript.read_text(encoding="utf-8"))
+        if stored:
+            self.speaker.speak(stored)
+            return None
+        return self.callout(transcript, speak=True)
+
+    def _on_callout(self, job_id: int, text: str, error: str, transcript: Path, speak: bool) -> None:
+        self.llm_status.set("assistant: ready")
+        spoken = clean_callout(text)
+        if error or not spoken:
+            self.log(f"{transcript.stem}: callout failed: {error or 'empty reply'}")
+        else:
+            transcript.write_text(with_callout(transcript.read_text(encoding="utf-8"), spoken), encoding="utf-8")
+            self.log(f"{transcript.stem}: 🔊 {spoken}")
+            if speak and self.radio.recording is None:  # never talk over a new recording
+                self.speaker.speak(spoken)
+        if self.transcriber_win is not None:
+            self.transcriber_win.job_done(job_id, spoken, error, transcript)
 
     def latest_transcript(self) -> Path | None:
         return next((rec.transcript for rec in list_recordings(self.app.recordings_dir) if rec.transcript), None)
@@ -559,8 +593,11 @@ class Hub:
             self.open("transcriber")
             if latest is None:
                 self.log("voice menu: no transcript to summarize yet")
+                self.speaker.speak("There's no recording to summarize yet.")
             else:
-                self.summarize(latest)
+                self.speak_recording(latest)
+                if "<!-- summary -->" not in latest.read_text(encoding="utf-8"):
+                    self.summarize(latest)
         elif kind == "record":
             recording = self.radio.recording is not None
             if target == "toggle" or (target == "start") != recording:
@@ -602,6 +639,7 @@ class Hub:
             except AudioUnavailable as exc:
                 self.log(f"record: {exc}")
                 return
+            self.speaker.stop()  # the pendant would record the Mac talking
             self.radio.recording = sink
             self.rec_path, self.rec_started = path, time.monotonic()
             self.log(f"recording → {path.name}")
@@ -637,6 +675,8 @@ class Hub:
         self.log(f"{wav.stem}: {message}")
         if transcript is not None:
             subprocess.Popen(["osascript", "-e", f'display notification "{message}" with title "Omi transcript ready"'])
+            if self.settings.get("speak_callout"):
+                self.callout(transcript)  # first: short, so it is spoken within seconds
             if self.settings.get("auto_summary"):
                 self.summarize(transcript)
         if self.transcriber_win is not None:
@@ -689,12 +729,20 @@ class Hub:
             self.game.top.lift()
             return
         self.recentre()
-        if name in ("marble", "dodger", "catch"):
+        name = "corn" if name == "marble" else name
+        if name in ("corn", "dodger", "catch"):
             from sideband.arcade import MiniGameWindow
 
             self.game = MiniGameWindow(self, name, self._game_closed)
             self.game_name = name
             self.log(f"{name} open: taps, tilt and shakes go to the game")
+            return
+        if name == "fighter":
+            from sideband.skyfighter_view import FighterWindow
+
+            self.game = FighterWindow(self, self._game_closed)
+            self.game_name = name
+            self.log("Sky Ace 1943: tilt flies, tap fires, shake rolls, hold pauses")
             return
         self.game_name = name
         if name == "voice":
@@ -733,6 +781,8 @@ class Hub:
 
     def _game_closed(self) -> None:
         game, self.game = self.game, None
+        if self.arcade is not None:
+            self.arcade.lift()
         flight = getattr(game, "game", None)
         if isinstance(game, GameWindow) and flight is not None and getattr(flight, "best", 0):
             self.record_score(self.game_name, float(flight.best))
@@ -797,9 +847,15 @@ class Hub:
         except (OSError, ValueError, AttributeError):
             pass
 
+    def tilt_calibrated(self) -> bool:
+        try:
+            return bool(json.loads(self._tilt_path.read_text(encoding="utf-8")).get("calibrated"))
+        except (OSError, ValueError, AttributeError):
+            return False
+
     def save_tilt(self) -> None:
         self._tilt_path.parent.mkdir(parents=True, exist_ok=True)
-        self._tilt_path.write_text(json.dumps(self.tilt.settings()) + "\n", encoding="utf-8")
+        self._tilt_path.write_text(json.dumps({**self.tilt.settings(), "calibrated": True}) + "\n", encoding="utf-8")
         self.log(f"tilt calibration saved {self.tilt.settings()}")
 
     # --- events ----------------------------------------------------------------------------
@@ -810,12 +866,17 @@ class Hub:
         tap = kind in ("single", "double")
         if self.controls is not None:
             self.controls.on_button(kind, code, tap)
-        if self.game is not None:
-            if self.voice is not None:  # voice game: one tap mutes / unmutes the mic
-                if kind == "single":
-                    self._toggle_voice()
-            elif tap:  # games react to raw taps at once; no gesture decoding delay
-                self.game.on_tap(kind)
+        held = kind == "release" and at - self.last_tap_at > 0.6  # a press past the tap threshold
+        if tap:
+            self.last_tap_at = at
+        target = self.game if self.game is not None else self.arcade
+        if target is not None:  # games and the Arcade menu own the button while open
+            if self.voice is not None and kind == "single" and getattr(self.game, "playing", False):
+                self._toggle_voice()  # Voice Flap in play: one tap mutes / unmutes the mic
+            elif tap:  # raw taps at once; no gesture decoding delay
+                target.on_tap(kind)
+            elif held:
+                target.on_hold()
             return
         self.log(f"button  {raw.hex()}  {kind}")
         self.decoder.triples = self.map.gestures["triple"].action != "none"
@@ -866,6 +927,8 @@ class Hub:
                 self.transcriber_win.token(int(rest[0]), str(rest[1]))  # type: ignore[arg-type]
         elif kind == "llm_summary":
             self._on_summary(int(rest[0]), str(rest[1]), str(rest[2]), rest[3])  # type: ignore[arg-type]
+        elif kind == "llm_callout":
+            self._on_callout(int(rest[0]), str(rest[1]), str(rest[2]), rest[3], bool(rest[4]))  # type: ignore[arg-type]
         elif kind == "llm_answer":
             self.llm_status.set("assistant: ready")
             if self.transcriber_win is not None:
@@ -962,6 +1025,7 @@ class Hub:
             self.menu_voice.close()
         if self.llm is not None:
             self.llm.close()
+        self.speaker.stop()
         if self.voice is not None:
             self.voice.close()
         self.radio.close()

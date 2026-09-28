@@ -206,13 +206,16 @@ class GameWindow:
         self.canvas = tk.Canvas(self.top, width=WIDTH, height=HEIGHT, bg=_mix(SKY_TOP, SKY_TOP, 0), highlightthickness=0)
         self.canvas.pack()
         self._sky()
-        if voice:  # arrow keys stand in for spoken commands, space starts / holds
-            for key, word in (("<Up>", "up"), ("<Down>", "down"), ("<Left>", "left"), ("<Right>", "right"), ("<space>", "stop")):
-                self.top.bind(key, lambda _e, w=word: self.command(w))
+        self.paused = False
+        if voice:  # arrow keys stand in for spoken commands
+            for key, word in (("<Up>", "up"), ("<Down>", "down"), ("<Left>", "left"), ("<Right>", "right")):
+                self.top.bind(key, lambda _e, w=word: self.command(w) if self.playing else None)
         else:
-            for key in ("<space>", "<Up>", "w"):
-                self.top.bind(key, lambda _e: self.flap())
-        self.canvas.bind("<Button-1>", lambda _e: self.flap())
+            for key in ("<Up>", "w"):
+                self.top.bind(key, lambda _e: self.flap() if self.playing else None)
+        self.top.bind("<space>", lambda _e: self.on_tap("single" if self.playing else "double"))
+        self.top.bind("<Return>", lambda _e: self.on_tap("double"))
+        self.top.bind("<Escape>", lambda _e: self.on_hold() if self.playing else self.on_tap("single"))
         self.top.bind("<KeyPress>", self._key_down)
         self.top.bind("<KeyRelease>", lambda e: self.keys.discard(e.keysym.lower()))
         self.top.protocol("WM_DELETE_WINDOW", self.close)
@@ -223,8 +226,36 @@ class GameWindow:
         self.game.flap(strength)
         self.flash = 8
 
+    @property
+    def playing(self) -> bool:
+        return self.game.started and self.game.alive and not self.paused
+
     def on_tap(self, kind: str) -> None:
-        self.flap(BOOST if kind == "double" else 1.0)
+        """The Arcade's shared flow: double tap starts / plays again, single tap goes back, taps flap in play."""
+        g, double = self.game, kind == "double"
+        if self.playing:
+            if not self.voice:
+                self.flap(BOOST if double else 1.0)
+            return
+        if not double:
+            if g.alive or g.since_death >= RETRY_S:
+                self.close()  # back to the Arcade
+            return
+        if self.paused:
+            self.paused = False
+            return
+        if not g.alive:
+            if g.since_death < RETRY_S:
+                return
+            g.reset()
+        if self.voice:
+            self.command("stop")  # takes off and hovers
+        else:
+            self.flap()
+
+    def on_hold(self) -> None:
+        if self.playing:
+            self.paused = True
 
     def on_shake(self) -> None:
         pass
@@ -255,7 +286,8 @@ class GameWindow:
         self.clock += dt
         self.steer_now, self.steer_label = self._steer()
         g = self.game
-        g.step(dt, self.steer_now)
+        if not self.paused:
+            g.step(dt, self.steer_now)
         ease = min(1.0, dt / CAM_LAG)
         self.cam[0] += (g.x - self.cam[0]) * ease
         self.cam[1] += (g.y + CAM_UP - self.cam[1]) * ease
@@ -376,7 +408,7 @@ class GameWindow:
 
     def _hud(self) -> None:
         c, g = self.canvas, self.game
-        cx, cy = WIDTH / 2, HEIGHT / 2
+        cx = WIDTH / 2
         c.create_text(cx + 2, 48, text=str(g.score), fill="#000000", font=("Helvetica", 44, "bold"), tags="dyn")
         c.create_text(cx, 46, text=str(g.score), fill="white", font=("Helvetica", 44, "bold"), tags="dyn")
         if g.best:
@@ -391,20 +423,24 @@ class GameWindow:
         c.create_rectangle(bx + 65, HEIGHT - 25, bx + 65 + 63 * self.steer_now, HEIGHT - 15, fill="#ffd84d", outline="", tags="dyn")
         if self.voice:
             self._voice_hud()
+        back = "● tap: back to the Arcade"
         if not g.started:
-            title, hint = (
-                ("Tap the pendant to unmute, then say “go up”", "say go left · go right · go up · go down · stop")
-                if self.voice
-                else ("Tap the pendant to start", "fly the ball through the glowing gaps  ·  tilt or ← → to steer")
-            )
-            c.create_text(cx, cy + 150, text=title, fill="white", font=("Helvetica", 24, "bold"), tags="dyn")
-            c.create_text(cx, cy + 184, fill="#c9d4ff", font=("Helvetica", 14), tags="dyn", text=hint)
+            title = "VOICE FLAP" if self.voice else "OMI FLAP 3D"
+            hint = ("then tap for the mic and say go left · right · up · down" if self.voice
+                    else "fly the ball through the glowing gaps  ·  tap to flap  ·  tilt to steer")
+            self._banner(title, f"●● double tap to start    ·    {back}\n{hint}", "#ffd23f")
         elif not g.alive:
             c.create_rectangle(0, 0, WIDTH, HEIGHT, fill="#b3261e", stipple="gray25", outline="", tags="dyn")
-            c.create_text(cx, cy - 110, text="Crashed", fill="white", font=("Helvetica", 34, "bold"), tags="dyn")
-            retry = "say a command to retry" if self.voice else "tap to retry"
-            c.create_text(cx, cy - 72, text=f"score {g.score}  ·  best {g.best}  ·  {retry}", fill="white",
-                          font=("Helvetica", 16), tags="dyn")
+            self._banner("CRASHED", f"score {g.score}  ·  best {g.best}\n●● double tap: fly again    ·    {back}", "#ff6b5b")
+        elif self.paused:
+            self._banner("PAUSED", f"●● double tap: carry on    ·    {back}", "#7fd4ff")
+
+    def _banner(self, title: str, text: str, colour: str) -> None:
+        c, cx, cy = self.canvas, WIDTH / 2, HEIGHT / 2
+        c.create_rectangle(cx - 330, cy + 60, cx + 330, cy + 210, fill="#0a0f22", outline=colour, width=4, stipple="gray75", tags="dyn")
+        for dx, col in ((3, "#000000"), (0, colour)):
+            c.create_text(cx + dx, cy + 98 + dx, text=title, fill=col, font=("Helvetica", 34, "bold italic"), tags="dyn")
+        c.create_text(cx, cy + 160, text=text, fill="white", font=("Helvetica", 14, "bold"), justify="center", tags="dyn")
 
     def _voice_hud(self) -> None:
         c = self.canvas
