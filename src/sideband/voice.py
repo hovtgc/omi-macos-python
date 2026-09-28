@@ -110,6 +110,12 @@ class MenuSpotter:
 
 
 EXIT_WORDS = {"exit", "quit", "leave"}
+METER_FLOOR_DB, METER_TOP_DB = -58.0, -14.0  # quiet room ... speaking up close to the pendant
+
+
+def mic_meter(db: float) -> float:
+    """The pendant mic's level (dBFS) as 0..1 for a volume meter."""
+    return max(0.0, min(1.0, (db - METER_FLOOR_DB) / (METER_TOP_DB - METER_FLOOR_DB)))
 
 
 def ingame_command(text: str) -> str | None:

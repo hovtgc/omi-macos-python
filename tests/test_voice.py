@@ -154,5 +154,16 @@ class ArcadeIntentTest(unittest.TestCase):
         self.assertEqual(guess_arcade("close the arcade", GAMES, None), "close")
         self.assertEqual(guess_arcade("nice weather", GAMES, "catch"), "none")
 
+
+class MicMeterTest(unittest.TestCase):
+    def test_scale(self) -> None:
+        from sideband.voice import mic_meter
+
+        self.assertEqual(mic_meter(-90.0), 0.0)  # mic just switched on
+        self.assertEqual(mic_meter(-58.0), 0.0)
+        self.assertEqual(mic_meter(0.0), 1.0)
+        self.assertGreater(mic_meter(-30.0), mic_meter(-45.0))
+        self.assertTrue(0.3 < mic_meter(-36.0) < 0.7)
+
 if __name__ == "__main__":
     unittest.main()

@@ -37,7 +37,7 @@ from sideband.minigames import (
     StarDodger,
     Stick,
 )
-from sideband.legend import chip, draw_legend, legend, round_rect
+from sideband.legend import chip, draw_ear, draw_legend, draw_meter, draw_mic, legend, round_rect
 from sideband.motion import Motion
 
 if TYPE_CHECKING:
@@ -154,7 +154,8 @@ class ArcadeWindow:
         self.selected = 0  # the highlighted game: "play this" means this one
         self.mode = "idle"  # idle → listening → thinking → idle
         self.heard = ""
-        self.listen_until = self.think_since = 0.0
+        self.listen_until = self.think_since = self.listen_started = 0.0
+        self.level = 0.0  # the mic meter, eased
         self.launch: tuple[str, float] | None = None  # (game, when): a short beat to see the pick
         self.clock = 0.0
         self.toast: tuple[str, float] = ("", 0.0)
@@ -223,7 +224,8 @@ class ArcadeWindow:
             self._toast("Connect your Omi to talk (its mic does the listening)")
             return
         self.mode, self.heard = "listening", ""
-        self.listen_until = time.monotonic() + LISTEN_S
+        self.listen_started = time.monotonic()
+        self.listen_until = self.listen_started + LISTEN_S
         self._sfx("step")
 
     def on_speech(self, text: str, final: bool) -> None:
@@ -398,26 +400,37 @@ class ArcadeWindow:
             round_rect(c, x0 - k, y0 - k, x1 + k, y1 + k, 24, fill="", outline=colour, width=width, tags="dyn")
 
     def _voice_bar(self, now: float) -> None:
-        """The one control and what it does right now: tap to talk, then what was heard."""
+        """The one control and what it does right now: tap to talk, what is being heard, how loud."""
         c = self.canvas
+        level, caption, age = self.hub.ear_state()
+        target = level or 0.0
+        self.level = max(target, getattr(self, "level", 0.0) - 0.06)  # fast up, gentle fall
         y0, y1 = AH - 100, AH - 18
         cy = (y0 + y1) / 2
         live = self.mode == "listening"
         round_rect(c, 40, y0, AW - 40, y1, 30, fill="#1b0540", outline="#ff4d6d" if live else NEON, width=3 if live else 2, tags="dyn")
-        mx = 100  # the mic: pulses while listening
-        r = 26 + (5 * (0.5 + 0.5 * math.sin(self.clock * 10)) if live else 0)
-        c.create_oval(mx - r, cy - r, mx + r, cy + r, fill="#ff4d6d" if live else "#3a1a6a", outline="", tags="dyn")
-        round_rect(c, mx - 7, cy - 16, mx + 7, cy + 4, 7, fill="#ffffff", outline="", tags="dyn")  # a drawn mic
-        c.create_arc(mx - 12, cy - 10, mx + 12, cy + 10, start=200, extent=140, style="arc", outline="#ffffff", width=3, tags="dyn")
-        c.create_line(mx, cy + 10, mx, cy + 16, fill="#ffffff", width=3, tags="dyn")
+        mx = 100  # the mic: a halo that grows with your voice
+        halo = 26 + 16 * self.level
+        if level is not None:
+            c.create_oval(mx - halo, cy - halo, mx + halo, cy + halo, fill="", outline="#ff4d6d" if live else "#4dffb0", width=3, tags="dyn")
+        c.create_oval(mx - 26, cy - 26, mx + 26, cy + 26, fill="#ff4d6d" if live else "#3a1a6a", outline="", tags="dyn")
+        draw_mic(c, mx, cy, "#ffffff", 1.2)
+        if level is not None:
+            draw_meter(c, AW - 40 - 30 - 58, cy, self.level, 34)
+        else:
+            c.create_text(AW - 70, cy, anchor="e", text="mic off", fill="#ff6b6b", font=("Helvetica", 13, "bold"), tags="dyn")
         x = 150
         if self.mode == "listening":
-            c.create_text(x, cy - 16, anchor="w", text="LISTENING…  say what you want to play", fill="#ff8fa3", font=("Helvetica", 14, "bold"), tags="dyn")
-            c.create_text(x, cy + 14, anchor="w", text=f"“{self.heard}”" if self.heard else "…", fill="#ffffff", font=("Helvetica", 22, "bold"), tags="dyn")
+            c.create_text(x, cy - 18, anchor="w", text="LISTENING…  say what you want to play", fill="#ff8fa3", font=("Helvetica", 14, "bold"), tags="dyn")
+            words = f"“{self.heard}”" if self.heard else ("…speak up, it's quiet" if now - self.listen_started > 2.0 and self.level < 0.1 else "…")
+            c.create_text(x, cy + 13, anchor="w", text=words, fill="#ffffff", font=("Helvetica", 24, "bold"), width=AW - 380, tags="dyn")
         elif self.mode == "thinking":
             dots = "." * (1 + int(self.clock * 4) % 3)
-            c.create_text(x, cy - 16, anchor="w", text=f"THINKING{dots}", fill="#00e5ff", font=("Helvetica", 14, "bold"), tags="dyn")
-            c.create_text(x, cy + 14, anchor="w", text=f"“{self.heard}”", fill="#ffffff", font=("Helvetica", 22, "bold"), tags="dyn")
+            c.create_text(x, cy - 18, anchor="w", text=f"THINKING{dots}", fill="#00e5ff", font=("Helvetica", 14, "bold"), tags="dyn")
+            c.create_text(x, cy + 13, anchor="w", text=f"“{self.heard}”", fill="#ffffff", font=("Helvetica", 24, "bold"), width=AW - 380, tags="dyn")
+        elif caption and age < 2.5:  # heard, but not after a tap: show it so the mic is clearly alive
+            c.create_text(x, cy - 16, anchor="w", text="HEARD (tap first to ask for something)", fill="#9c8cff", font=("Helvetica", 12, "bold"), tags="dyn")
+            c.create_text(x, cy + 12, anchor="w", text=f"“{caption}”", fill="#cfc4ff", font=("Helvetica", 18, "bold"), width=AW - 380, tags="dyn")
         else:
             chip(c, x, cy - 14, "tap", "TALK   (or click anywhere)", size=17)
             c.create_text(x, cy + 20, anchor="w", fill="#cfc4ff", font=("Helvetica", 14, "bold"), tags="dyn",
@@ -638,6 +651,7 @@ class MiniGameWindow:
         c = self.canvas
         c.create_rectangle(0, H - 34, W, H, fill="#070b18", outline="", tags="dyn")
         draw_legend(c, W / 2, H - 17, legend(self.name, motion=label != "keys"), size=12, max_width=W - 24)
+        draw_ear(c, W / 2, H - 56, *self.hub.ear_state())
         colours = {"ready": "#ffd23f", "paused": "#7fd4ff", "over": "#ff6b5b"}
         if self.state not in colours:
             return

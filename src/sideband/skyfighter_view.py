@@ -13,7 +13,7 @@ import time
 import tkinter as tk
 from typing import TYPE_CHECKING, Callable
 
-from sideband.legend import draw_legend, legend
+from sideband.legend import draw_ear, draw_legend, legend
 from sideband.meshes import ENEMY, SPITFIRE, Mesh, Vec, apply, bomber, dot, face_normal, fighter, propeller, rotation, unit
 from sideband.minigames import Stick
 from sideband.skyfighter import Dogfight
@@ -286,6 +286,7 @@ class FighterWindow:
         c.create_text(W - 260, 22, anchor="e", text=roll, fill="#ffe27a", font=("Helvetica", 13, "bold"), tags="dyn")
         c.create_rectangle(0, H - 36, W, H, fill="#0b1633", outline="", stipple="gray50", tags="dyn")
         draw_legend(c, W / 2, H - 18, legend("fighter", motion=self.source != "keys"), size=12, max_width=W - 24)
+        draw_ear(c, W / 2, H - 58, *self.hub.ear_state())
         if self.state == "ready":
             self._banner("SKY ACE 1943", "shoot down the bombers · watch your six", legend("fighter", "ready"), "#ffcf3d")
         elif self.state == "paused":

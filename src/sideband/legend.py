@@ -93,3 +93,43 @@ def draw_legend(c: tk.Canvas, cx: float, cy: float, items: tuple[tuple[str, str]
     for (control, label), width in zip(items, widths):
         chip(c, x, cy, control, label, size, tag)
         x += width + gap
+
+
+METER_BARS = 10
+
+
+def draw_meter(c: tk.Canvas, x: float, cy: float, level: float, height: float = 22, tag: str = "dyn") -> float:
+    """A little equaliser: bars that light up with the mic level. Returns its width."""
+    bar, gap = 4, 2
+    for i in range(METER_BARS):
+        t = (i + 1) / METER_BARS
+        h = height * (0.35 + 0.65 * t)
+        lit = level >= t - 0.5 / METER_BARS
+        colour = ("#3ddc84" if t <= 0.6 else "#ffd23f" if t <= 0.85 else "#ff4d6d") if lit else "#3a2a5a"
+        bx = x + i * (bar + gap)
+        c.create_rectangle(bx, cy + height / 2 - h, bx + bar, cy + height / 2, fill=colour, outline="", tags=tag)
+    return METER_BARS * (bar + gap) - gap
+
+
+def draw_mic(c: tk.Canvas, x: float, cy: float, colour: str = "#ffffff", s: float = 1.0, tag: str = "dyn") -> None:
+    """A drawn microphone (Tk on macOS draws emoji unreliably)."""
+    round_rect(c, x - 6 * s, cy - 13 * s, x + 6 * s, cy + 4 * s, 6 * s, fill=colour, outline="", tags=tag)
+    c.create_arc(x - 10 * s, cy - 8 * s, x + 10 * s, cy + 9 * s, start=200, extent=140, style="arc", outline=colour, width=max(2, int(2 * s)), tags=tag)
+    c.create_line(x, cy + 9 * s, x, cy + 14 * s, fill=colour, width=max(2, int(2 * s)), tags=tag)
+
+
+def draw_ear(c: tk.Canvas, cx: float, cy: float, level: float | None, caption: str, age: float,
+             hint: str = "say “exit game”", fresh_s: float = 2.5, tag: str = "dyn") -> None:
+    """The in-game mic pill: a live volume meter and what the pendant just heard (or a hint when quiet)."""
+    if level is None:
+        return
+    fresh = caption and age < fresh_s
+    text = f"“{caption}”" if fresh and not caption.startswith("“") else (caption if fresh else hint)
+    spec = ("Helvetica", 15 if fresh else 12, "bold")
+    width = 20 + 22 + 8 + METER_BARS * 6 + 12 + _measure(c, spec, text) + 18
+    x0 = cx - width / 2
+    round_rect(c, x0, cy - 17, x0 + width, cy + 17, 16, fill="#12002b", outline="#4dffb0" if fresh else "#3a2a5a", width=2, tags=tag)
+    draw_mic(c, x0 + 22, cy, "#4dffb0" if level > 0.15 else "#9c8cff", 0.9, tag)
+    mx = x0 + 42
+    mx += draw_meter(c, mx, cy, level, 20, tag) + 12
+    c.create_text(mx, cy, anchor="w", text=text, fill="#ffffff" if fresh else "#9c8cff", font=spec, tags=tag)

@@ -18,7 +18,7 @@ import tkinter as tk
 from dataclasses import dataclass, field
 from typing import Callable
 
-from sideband.legend import draw_legend, legend
+from sideband.legend import draw_ear, draw_legend, legend
 
 # World
 HALF_W, CEIL = 6.0, 8.0
@@ -188,7 +188,9 @@ class GameWindow:
         on_key: Callable[[str], None] = lambda _k: None,
         voice: bool = False,
         voice_status: Callable[[], tuple[bool, str]] = lambda: (False, ""),
+        ear: Callable[[], tuple[float | None, str, float]] = lambda: (None, "", 99.0),
     ) -> None:
+        self.ear = ear  # the pendant mic: level, last words heard, their age
         self.game = Flight(seed=random.randrange(1 << 30), voice=voice)
         self.voice = voice
         self.voice_status = voice_status
@@ -427,6 +429,7 @@ class GameWindow:
             c.create_rectangle(bx + 65, HEIGHT - 25, bx + 65 + 63 * self.steer_now, HEIGHT - 15, fill="#ffd84d", outline="", tags="dyn")
         if self.voice:
             self._voice_hud()
+        draw_ear(c, WIDTH / 2, HEIGHT - 62, *self.ear())
         if not g.started:
             hint = ("then tap for the mic and say go left · right · up · down" if self.voice
                     else "fly the ball through the glowing gaps")

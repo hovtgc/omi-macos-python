@@ -45,7 +45,7 @@ from sideband.speech import Speaker
 from sideband.llm import title as transcript_title
 from sideband.recordings import list_recordings, new_path
 from sideband.transcribe import Transcriber
-from sideband.voice import GAMES as SPOKEN_GAMES, VoiceListener, ingame_command, model_path
+from sideband.voice import GAMES as SPOKEN_GAMES, VoiceListener, ingame_command, mic_meter, model_path
 
 PUMP_MS = 10
 STEADY_S = 1.0  # recentring uses the median of this much motion
@@ -265,6 +265,7 @@ class Hub:
         self.menu_mic_was_on = False
         self.ear: VoiceListener | None = None  # the Arcade's open-vocabulary listener: menu requests, "exit game"
         self.ear_fired = False  # an in-game command already ran for the phrase being said
+        self.caption: tuple[str, float] = ("", 0.0)  # what the pendant last heard, and when
         self.windows: list[object] = []  # open app windows, most recent last, for "close"
         self.llm: LocalLLM | None = None
         self.job_ids = 0
@@ -762,10 +763,10 @@ class Hub:
                 lambda text: self.post("voice_text", text),
             )
             self.voice.start()
-            self.game = GameWindow(self.root, self._game_closed, voice=True, voice_status=lambda: (self.voice_on, self.voice_heard))
+            self.game = GameWindow(self.root, self._game_closed, voice=True, voice_status=lambda: (self.voice_on, self.voice_heard), ear=self.ear_state)
             self.log("Voice Flap open: tap the pendant to unmute, say go left / right / up / down (nothing recorded)")
         else:
-            self.game = GameWindow(self.root, self._game_closed, self._pendant_steer, self._game_key)
+            self.game = GameWindow(self.root, self._game_closed, self._pendant_steer, self._game_key, ear=self.ear_state)
             self.log("Omi Flap 3D open: taps flap instead of running actions")
 
     # --- Arcade voice: an open-vocabulary listener while the Arcade or a game is open ------
@@ -801,18 +802,27 @@ class Hub:
         in the menu, hand the finished phrase to the Arcade (which asks the LLM)."""
         if text == "listening":
             return
+        self.caption = (text, time.monotonic())
         if self.game is not None:
             if not self.ear_fired:
                 command = ingame_command(text)
                 if command is not None:
                     self.ear_fired = True
                     self.log(f"arcade voice: “{text}” → {command}")
+                    label = {"exit": "EXIT", "pause": "PAUSE", "go": "GO"}[command]
+                    self.caption = (f"“{text}”  →  {label}", time.monotonic())
                     self._game_voice(command)
             if final:
                 self.ear_fired = False
             return
         if self.arcade is not None:
             self.arcade.on_speech(text, final)
+
+    def ear_state(self) -> tuple[float | None, str, float]:
+        """For the mic HUD: level 0..1 (None with the mic off), the last words heard, and their age in seconds."""
+        level = mic_meter(self.radio.level_db) if self.radio.mic_on else None
+        text, at = self.caption
+        return level, text, time.monotonic() - at
 
     def _game_voice(self, command: str) -> None:
         game = self.game
