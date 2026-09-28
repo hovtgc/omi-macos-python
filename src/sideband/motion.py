@@ -186,3 +186,28 @@ class ShakeDetector:
             self.last_at = now
             return True
         return False
+
+
+@dataclass
+class ShakeGate:
+    """Pressing the button jolts the pendant like a small shake. The firmware only reports the tap
+    about 300 ms later (600 ms for a double), so hold each shake for `wait_s` and drop it when a
+    button event turns up: that jolt was the press."""
+
+    wait_s: float = 0.65
+    pending: float | None = None
+
+    def shake(self, at: float) -> None:
+        if self.pending is None:
+            self.pending = at
+
+    def button(self, at: float) -> None:
+        if self.pending is not None and at - self.pending < self.wait_s:
+            self.pending = None
+
+    def due(self, now: float) -> bool:
+        """True once, when a held shake had no button event after it."""
+        if self.pending is not None and now - self.pending >= self.wait_s:
+            self.pending = None
+            return True
+        return False

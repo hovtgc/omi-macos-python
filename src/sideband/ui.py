@@ -37,7 +37,7 @@ from sideband.inputs import (
     button_kind,
     input_name,
 )
-from sideband.motion import MOTION_UUID, Motion, ShakeDetector, Tilt2D, parse_motion, steady
+from sideband.motion import MOTION_UUID, Motion, ShakeDetector, ShakeGate, Tilt2D, parse_motion, steady
 from sideband.protocol import AUDIO_CODEC_UUID, AUDIO_DATA_UUID, BATTERY_LEVEL_UUID, codec_name, strip_packet
 from sideband.llm import Doc, Job, LocalLLM, ask_all_messages, ask_messages, clean_summary, pick_context, summary_messages, transcript_text, with_summary
 from sideband.llm import arcade_messages, callout_messages, callout_of, clean_callout, guess_arcade, parse_arcade, with_callout
@@ -240,6 +240,7 @@ class Hub:
         self.tilt = Tilt2D()
         self._load_tilt()
         self.shaker = ShakeDetector()
+        self.shake_gate = ShakeGate()  # a button press is not a shake
         self.last_motion: Motion | None = None
         self.motion_at = 0.0
         self.recent_motion: list[tuple[float, Motion]] = []  # the last STEADY_S of samples
@@ -992,6 +993,7 @@ class Hub:
     # --- events ----------------------------------------------------------------------------
 
     def _on_button(self, raw: bytes, at: float) -> None:
+        self.shake_gate.button(at)
         code = button_code(raw)
         kind = button_kind(code)
         tap = kind in ("single", "double")
@@ -1026,9 +1028,7 @@ class Hub:
             self.recent_motion.pop(0)
         self.motion_count += 1
         if self.shaker.feed(sample, at):
-            self.log("shake")
-            if self.game is not None:
-                self.game.on_shake()
+            self.shake_gate.shake(at)  # fires from _pump unless a button event shows it was a press
         if self.arcade is not None:
             self.arcade.on_motion(sample)
         if self.controls is not None:
@@ -1130,6 +1130,10 @@ class Hub:
                 break
             self._handle(*event)
         now = time.monotonic()
+        if self.shake_gate.due(now):
+            self.log("shake")
+            if self.game is not None:
+                self.game.on_shake()
         for gesture in self.decoder.poll(now):
             self.fire(gesture)
         if self.menu_until is not None and now > self.menu_until:

@@ -128,5 +128,28 @@ class SteadyTest(unittest.TestCase):
         tipped = Motion(9.8 * math.sin(math.radians(10)), 0.0, 9.8 * math.cos(math.radians(10)), 0.0, 0.0, 0.0)
         self.assertAlmostEqual(tilt.degrees_from_rest(tipped), 10.0, places=3)
 
+
+class ShakeGateTest(unittest.TestCase):
+    def test_a_press_is_not_a_shake(self) -> None:
+        from sideband.motion import ShakeGate
+
+        gate = ShakeGate(wait_s=0.65)
+        gate.shake(10.0)
+        gate.button(10.3)  # the tap's code arrives: that jolt was the press
+        self.assertFalse(gate.due(11.0))
+
+    def test_a_real_shake_fires_once_after_the_wait(self) -> None:
+        from sideband.motion import ShakeGate
+
+        gate = ShakeGate(wait_s=0.65)
+        gate.shake(10.0)
+        self.assertFalse(gate.due(10.3))
+        self.assertTrue(gate.due(10.7))
+        self.assertFalse(gate.due(10.8))
+        gate.button(11.5)  # a later press does not matter
+        gate.shake(12.0)
+        gate.button(13.0)  # too late to be this shake's press
+        self.assertTrue(gate.due(13.1))
+
 if __name__ == "__main__":
     unittest.main()

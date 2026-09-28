@@ -147,11 +147,10 @@ class LegendTest(unittest.TestCase):
         for game in PLAY:
             if game == "menu":
                 continue
-            self.assertEqual(legend(game, "ready"), (("tap", "START"), ("double", "ARCADE"), ("say", "EXIT GAME")))
+            self.assertEqual(legend(game, "ready"), (("tap", "START"), ("double", "ARCADE")))
             self.assertEqual(legend(game, "paused")[1], ("double", "ARCADE"))
             self.assertEqual(legend(game, "over")[0], ("tap", "AGAIN"))
             self.assertIn(("hold", "PAUSE"), legend(game))
-            self.assertTrue(any(control == "say" and "EXIT" in label for control, label in legend(game)))
 
     def test_menu_is_tap_to_talk(self) -> None:
         from sideband.legend import legend

@@ -677,7 +677,7 @@ class MiniGameWindow:
         c = self.canvas
         c.create_rectangle(0, H - 34, W, H, fill="#070b18", outline="", tags="dyn")
         draw_legend(c, W / 2, H - 17, legend(self.name, motion=label != "keys"), size=12, max_width=W - 24)
-        draw_ear(c, W / 2, H - 56, *self.hub.ear_state())
+        draw_ear(c, W - 10, H - 52, *self.hub.ear_state())
         colours = {"ready": "#ffd23f", "paused": "#7fd4ff", "over": "#ff6b5b"}
         if self.state not in colours:
             return
@@ -820,8 +820,11 @@ class MiniGameWindow:
             x, y, s = ox + g.x * scale, g.y * scale, SHIP_R * scale * 1.3
             c.create_polygon(x, y - s * 1.3, x - s, y + s, x, y + s * 0.5, x + s, y + s, fill="#ffc440", outline="#fff3c4", width=2, tags="dyn")
             c.create_oval(x - 4, y + s * 0.6, x + 4, y + s * 1.4, fill="#ff6b3d", outline="", tags="dyn")
-        if g.flash_s > 0:
-            c.create_rectangle(0, 0, W, H, fill="white", stipple="gray50", outline="", tags="dyn")
+        if g.flash_s > 0:  # the bomb: a shockwave ring out from the ship
+            t = 1 - g.flash_s / 0.35
+            x, y, r = ox + g.x * scale, g.y * scale, 30 + t * W
+            for k, colour, width in ((0, "#ffffff", 6), (14, "#ffb347", 4), (28, "#ff5fa2", 2)):
+                c.create_oval(x - r + k, y - r + k, x + r - k, y + r - k, outline=colour, width=width, tags="dyn")
         c.create_text(20, 22, anchor="w", text=f"{g.score}", fill="white", font=("Helvetica", 22, "bold"), tags="dyn")
         c.create_text(W - 20, 22, anchor="e", text="♥" * g.lives, fill="#ff6b6b", font=("Helvetica", 20), tags="dyn")
         c.create_text(W - 20, 48, anchor="e", text=f"bombs {'◆' * g.bombs or '—'}  (shake)", fill="#ffb347", font=("Helvetica", 14, "bold"), tags="dyn")
