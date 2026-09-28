@@ -18,6 +18,8 @@ import tkinter as tk
 from dataclasses import dataclass, field
 from typing import Callable
 
+from sideband.legend import draw_legend, legend
+
 # World
 HALF_W, CEIL = 6.0, 8.0
 RADIUS = 0.25
@@ -213,9 +215,9 @@ class GameWindow:
         else:
             for key in ("<Up>", "w"):
                 self.top.bind(key, lambda _e: self.flap() if self.playing else None)
-        self.top.bind("<space>", lambda _e: self.on_tap("single" if self.playing else "double"))
-        self.top.bind("<Return>", lambda _e: self.on_tap("double"))
-        self.top.bind("<Escape>", lambda _e: self.on_hold() if self.playing else self.on_tap("single"))
+        self.top.bind("<space>", lambda _e: self.on_tap("single"))
+        self.top.bind("<Return>", lambda _e: self.on_tap("single"))
+        self.top.bind("<Escape>", lambda _e: self.on_hold() if self.playing else self.on_tap("double"))
         self.top.bind("<KeyPress>", self._key_down)
         self.top.bind("<KeyRelease>", lambda e: self.keys.discard(e.keysym.lower()))
         self.top.protocol("WM_DELETE_WINDOW", self.close)
@@ -231,18 +233,19 @@ class GameWindow:
         return self.game.started and self.game.alive and not self.paused
 
     def on_tap(self, kind: str) -> None:
-        """The Arcade's shared flow: double tap starts / plays again, single tap goes back, taps flap in play."""
+        """The Arcade's shared flow: one tap starts / resumes / plays again, double tap goes back; taps flap in play."""
         g, double = self.game, kind == "double"
         if self.playing:
             if not self.voice:
                 self.flap(BOOST if double else 1.0)
             return
-        if not double:
+        if double:
             if g.alive or g.since_death >= RETRY_S:
                 self.close()  # back to the Arcade
             return
         if self.paused:
             self.paused = False
+            self.on_key("c")  # recentre tilt to the current grip
             return
         if not g.alive:
             if g.since_death < RETRY_S:
@@ -413,34 +416,35 @@ class GameWindow:
         c.create_text(cx, 46, text=str(g.score), fill="white", font=("Helvetica", 44, "bold"), tags="dyn")
         if g.best:
             c.create_text(WIDTH - 20, 26, anchor="e", text=f"best {g.best}", fill="#c9d4ff", font=("Helvetica", 14), tags="dyn")
+        name = "voice" if self.voice else "flap"
         c.create_rectangle(0, HEIGHT - 40, WIDTH, HEIGHT, fill="#0a0f22", outline="", stipple="gray50", tags="dyn")
-        c.create_text(16, HEIGHT - 20, anchor="w", fill="#aab4d4", font=("Helvetica", 12), tags="dyn",
-                      text=("tap pendant: mute / unmute   ·   say go left · right · up · down · stop   ·   arrow keys work too"
-                            if self.voice else f"steer: {self.steer_label}   ·   tap: flap   ·   double tap: big flap"))
-        bx = WIDTH - 150
-        c.create_rectangle(bx, HEIGHT - 27, bx + 130, HEIGHT - 13, outline="#5b6a99", tags="dyn")
-        c.create_line(bx + 65, HEIGHT - 30, bx + 65, HEIGHT - 10, fill="#5b6a99", tags="dyn")
-        c.create_rectangle(bx + 65, HEIGHT - 25, bx + 65 + 63 * self.steer_now, HEIGHT - 15, fill="#ffd84d", outline="", tags="dyn")
+        draw_legend(c, WIDTH / 2 - 70, HEIGHT - 20, legend(name, motion=self.voice or self.steer_label != "keys ← →"),
+                    size=12, max_width=WIDTH - 200)
+        if not self.voice:  # live steering gauge
+            bx = WIDTH - 150
+            c.create_rectangle(bx, HEIGHT - 27, bx + 130, HEIGHT - 13, outline="#5b6a99", tags="dyn")
+            c.create_line(bx + 65, HEIGHT - 30, bx + 65, HEIGHT - 10, fill="#5b6a99", tags="dyn")
+            c.create_rectangle(bx + 65, HEIGHT - 25, bx + 65 + 63 * self.steer_now, HEIGHT - 15, fill="#ffd84d", outline="", tags="dyn")
         if self.voice:
             self._voice_hud()
-        back = "● tap: back to the Arcade"
         if not g.started:
-            title = "VOICE FLAP" if self.voice else "OMI FLAP 3D"
             hint = ("then tap for the mic and say go left · right · up · down" if self.voice
-                    else "fly the ball through the glowing gaps  ·  tap to flap  ·  tilt to steer")
-            self._banner(title, f"●● double tap to start    ·    {back}\n{hint}", "#ffd23f")
+                    else "fly the ball through the glowing gaps")
+            self._banner("VOICE FLAP" if self.voice else "OMI FLAP 3D", hint, legend(name, "ready"), "#ffd23f")
         elif not g.alive:
             c.create_rectangle(0, 0, WIDTH, HEIGHT, fill="#b3261e", stipple="gray25", outline="", tags="dyn")
-            self._banner("CRASHED", f"score {g.score}  ·  best {g.best}\n●● double tap: fly again    ·    {back}", "#ff6b5b")
+            self._banner("CRASHED", f"score {g.score}  ·  best {g.best}", legend(name, "over"), "#ff6b5b")
         elif self.paused:
-            self._banner("PAUSED", f"●● double tap: carry on    ·    {back}", "#7fd4ff")
+            self._banner("PAUSED", "", legend(name, "paused"), "#7fd4ff")
 
-    def _banner(self, title: str, text: str, colour: str) -> None:
+    def _banner(self, title: str, text: str, items: tuple[tuple[str, str], ...], colour: str) -> None:
         c, cx, cy = self.canvas, WIDTH / 2, HEIGHT / 2
-        c.create_rectangle(cx - 330, cy + 60, cx + 330, cy + 210, fill="#0a0f22", outline=colour, width=4, stipple="gray75", tags="dyn")
+        c.create_rectangle(cx - 330, cy + 60, cx + 330, cy + 220, fill="#0a0f22", outline=colour, width=4, stipple="gray75", tags="dyn")
         for dx, col in ((3, "#000000"), (0, colour)):
-            c.create_text(cx + dx, cy + 98 + dx, text=title, fill=col, font=("Helvetica", 34, "bold italic"), tags="dyn")
-        c.create_text(cx, cy + 160, text=text, fill="white", font=("Helvetica", 14, "bold"), justify="center", tags="dyn")
+            c.create_text(cx + dx, cy + 96 + dx, text=title, fill=col, font=("Helvetica", 34, "bold italic"), tags="dyn")
+        if text:
+            c.create_text(cx, cy + 138, text=text, fill="white", font=("Helvetica", 14, "bold"), justify="center", tags="dyn")
+        draw_legend(c, cx, cy + 182, items, size=17)
 
     def _voice_hud(self) -> None:
         c = self.canvas

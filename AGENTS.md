@@ -27,7 +27,7 @@ USB does not carry audio. Do not add a USB transport.
 - Codec ids are in `protocol.CODECS`. Opus is 20 and 21, 16 kHz mono.
 - `radio.py` is the only module allowed to import `bleak` or `smpclient`.
 - Button gestures come from the firmware's codes (`inputs.BUTTON_CODES`). Do not re-derive them from timing. A 3 s hold powers the pendant off and cannot be mapped.
-- Arcade flow is the same in every game: double tap = forward (start, again, resume), single tap = back, hold = pause. Keep it that way for new games.
+- Arcade flow is the same in every game: single tap = forward (start, again, resume), double tap = back to the Arcade, hold = pause. Every screen shows its controls with `legend.py` (add a `PLAY` entry for a new game). Keep it that way for new games.
 - Tests must pass with no pendant and no Bluetooth adapter.
 - Keep models local: Whisper, the assistant LLM and Vosk run on the Mac. Do not add cloud transcription or cloud LLMs without the owner asking.
 - Do not add Deepgram, Firebase, accounts, or network transcription. Nothing is recorded unless the user passes `--wav`. Voice commands use offline Vosk with a fixed command grammar; audio is dropped after recognition.
@@ -83,7 +83,8 @@ A connected pendant stops advertising. Close the window before `firmware` or `sc
 | `src/sideband/ui.py` | Launcher (`Hub`): the pendant connection, gesture actions, recorder, transcriber, assistant, voice menu, 24 h audio limit. |
 | `src/sideband/transcriber_app.py` | Transcriber window: record, read, summarize, ask. |
 | `src/sideband/controls.py` | Controls window: live inputs and the gesture map. |
-| `src/sideband/arcade.py` | Omi Arcade menu (pendant-driven, calibrates on open), mini game windows, Corn Maze art. |
+| `src/sideband/arcade.py` | Omi Arcade menu (tilt snap navigation, calibrates on open and on return from a game), mini game windows, Corn Maze art. |
+| `src/sideband/legend.py` | The control legend: which controls each game and state shows (pure), and the colour-coded chips. |
 | `src/sideband/skyfighter.py` | Sky Ace 1943 game state. Pure. |
 | `src/sideband/skyfighter_view.py` | Sky Ace 1943 software 3D renderer (Tk). |
 | `src/sideband/meshes.py` | Low-poly aircraft meshes and 3D math. Pure. |

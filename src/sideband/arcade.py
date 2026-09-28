@@ -1,15 +1,18 @@
 """Omi Arcade: a neon game menu played entirely with the pendant, and the mini game windows.
 
-On open it calibrates motion (hold still, tilt right, tilt forward; after the first time just hold still).
-Then tilt moves a pointer over the games, a double tap goes forward (play), a single tap goes back (the
-previous game), and a hold recalibrates. Without motion the taps alone still work. Every game shares the
-same flow: double tap to start or play again, single tap back to the Arcade, hold to pause.
+On open it calibrates motion (hold still, tilt right, tilt forward; after the first time just hold still),
+and again, quickly, every time you come back from a game. Then the pendant is a menu joystick: flick it
+toward a game to move one tile, one tap plays, a double tap goes to the next game (so taps alone work
+without motion), hold recentres, and ⟲ (up from the top row) runs the full calibration. Every game shares
+the same flow: one tap to start, resume or play again, double tap back to the Arcade, hold to pause.
+The legend at the bottom (`legend.py`) always says what each control does right now.
 """
 
 from __future__ import annotations
 
 import math
 import random
+import subprocess
 import time
 import tkinter as tk
 from typing import TYPE_CHECKING, Callable
@@ -30,6 +33,7 @@ from sideband.minigames import (
     StarDodger,
     Stick,
 )
+from sideband.legend import chip, draw_legend, legend, round_rect
 from sideband.motion import Motion
 
 if TYPE_CHECKING:
@@ -45,6 +49,24 @@ GAMES = (
     ("voice", "VOICE FLAP", "tap for the mic · say go left / right / up / down", ("#4dffb0", "#157a5a"), "bubble"),
 )
 AW, AH = 1040, 700
+RECAL = len(GAMES)  # the ⟲ RECALIBRATE button, selectable like a tile
+RECAL_BOX = (AW - 250, 20, AW - 24, 62)
+REST_S = 1.0
+QUICK_REST_S = 0.6
+PINNED_S = 1.5
+SOUNDS = {"move": "Pop", "back": "Bottle", "play": "Hero", "step": "Tink", "done": "Glass", "recal": "Purr"}
+
+
+def sfx(name: str, enabled: bool = True) -> None:
+    """A short macOS system sound, fire and forget."""
+    if enabled and name in SOUNDS:
+        try:
+            subprocess.Popen(["afplay", "-v", "0.35", f"/System/Library/Sounds/{SOUNDS[name]}.aiff"],
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except OSError:
+            pass
+
+
 W, H = 760, 560
 FRAME_MS = 16
 MENU_MS = 33
@@ -69,11 +91,6 @@ def _ball(c: tk.Canvas, x: float, y: float, r: float, body: tuple[int, int, int]
         ox = oy = -r * 0.3 * t
         colour = _mix(dark, body, t * 1.6) if t < 0.62 else _mix(body, (255, 255, 255), (t - 0.62) / 0.38)  # type: ignore[arg-type]
         c.create_oval(x + ox - rr, y + oy - rr, x + ox + rr, y + oy + rr, fill=colour, outline="", tags=tag)
-
-
-def _round_rect(c: tk.Canvas, x0: float, y0: float, x1: float, y1: float, r: float, **kw) -> int:
-    points = [x0 + r, y0, x1 - r, y0, x1, y0, x1, y0 + r, x1, y1 - r, x1, y1, x1 - r, y1, x0 + r, y1, x0, y1, x0, y1 - r, x0, y0 + r, x0, y0]
-    return c.create_polygon(points, smooth=True, **kw)
 
 
 def _icon(c: tk.Canvas, kind: str, x: float, y: float, s: float, tag: str) -> None:
@@ -110,7 +127,7 @@ def _icon(c: tk.Canvas, kind: str, x: float, y: float, s: float, tag: str) -> No
             c.create_line(x - s * 0.7 + k * s * 0.47, y, x - s * 0.55 + k * s * 0.37, y + s * 0.7, fill="#7a4a1c", tags=tag)
         c.create_text(x, y - s * 0.55, text="★", fill="#ffd84d", font=("Helvetica", int(s * 1.1)), tags=tag)
     elif kind == "bubble":
-        _round_rect(c, x - s, y - s * 0.75, x + s, y + s * 0.45, s * 0.35, fill="#e9fff6", outline="#157a5a", width=2, tags=tag)
+        round_rect(c, x - s, y - s * 0.75, x + s, y + s * 0.45, s * 0.35, fill="#e9fff6", outline="#157a5a", width=2, tags=tag)
         c.create_polygon(x - s * 0.4, y + s * 0.4, x - s * 0.1, y + s * 0.4, x - s * 0.55, y + s * 0.9, fill="#e9fff6", outline="#157a5a", tags=tag)
         c.create_text(x, y - s * 0.15, text="go ◀ ▶", fill="#157a5a", font=("Helvetica", int(s * 0.42), "bold"), tags=tag)
 
@@ -120,6 +137,43 @@ WIZARD = (
     ("right", "TILT RIGHT ▶", "Tip the right side down and hold"),
     ("forward", "TILT FORWARD ▲", "Tip the far edge down and hold"),
 )
+
+
+class SnapNav:
+    """Tilt as a menu joystick: a flick past FIRE moves one step, then come back past REARM for the next.
+
+    Starts disarmed, so a pendant still tipped from the last game moves nothing until it is centred.
+    """
+
+    FIRE, REARM = 0.5, 0.25
+
+    def __init__(self) -> None:
+        self.armed = False
+
+    def feed(self, x: float, y: float) -> tuple[int, int] | None:
+        """(dx, dy) in screen steps (dy -1 is up, from tilting forward), or None."""
+        reach = max(abs(x), abs(y))
+        if not self.armed:
+            self.armed = reach < self.REARM
+            return None
+        if reach < self.FIRE:
+            return None
+        self.armed = False
+        return (1 if x > 0 else -1, 0) if abs(x) >= abs(y) else (0, -1 if y > 0 else 1)
+
+
+def menu_step(selected: int, dx: int, dy: int, last: int, cols: int = 3, count: int = len(GAMES)) -> int:
+    """Move the menu selection. Left / right run through the games and wrap; up from the top row
+    reaches ⟲ RECALIBRATE; anything from ⟲ goes back to the last game."""
+    if selected == RECAL:
+        return RECAL if dy < 0 else last
+    if dx:
+        return (selected + dx) % count
+    if dy < 0:
+        return RECAL if selected < cols else selected - cols
+    if dy > 0 and selected + cols < count:
+        return selected + cols
+    return selected
 
 
 class ArcadeWindow:
@@ -132,19 +186,19 @@ class ArcadeWindow:
         self.canvas = tk.Canvas(self.top, width=AW, height=AH, highlightthickness=0, bg="#12002b")
         self.canvas.pack()
         self.selected = 0
-        self.pointer = [AW / 2, AH / 2]
+        self.last_game = 0
+        self.nav = SnapNav()
+        self.pinned_since: float | None = None
         self.clock = 0.0
         self.toast: tuple[str, float] = ("", 0.0)
         self.stars = [(random.uniform(0, AW), random.uniform(0, AH * 0.55), random.uniform(0, math.tau)) for _ in range(120)]
         self.tiles: list[tuple[float, float, float, float]] = []
         self._layout()
+        self.glow = list(self._box(self.selected))  # the selection frame, eased toward the chosen item
         self._background()
         self.top.bind("<KeyPress>", self._key)
-        self.opened = time.monotonic()
         # Calibrate straight away: the full wizard the first time, then just "hold still".
-        self.step: int | None = 0
-        self.full = not self.hub.tilt_calibrated()
-        self.step_since = time.monotonic()
+        self._start_calibration(full=not self.hub.tilt_calibrated())
         self._last = time.monotonic()
         self._tick()
 
@@ -155,6 +209,12 @@ class ArcadeWindow:
         left, top, width, height = 60, 190, AW - 120, 400
         tw, th = (width - gap * (cols - 1)) / cols, (height - gap * (rows - 1)) / rows
         self.tiles = [(left + (i % cols) * (tw + gap), top + (i // cols) * (th + gap), tw, th) for i in range(len(GAMES))]
+
+    def _box(self, item: int) -> tuple[float, float, float, float]:
+        if item == RECAL:
+            return RECAL_BOX
+        x, y, w, h = self.tiles[item]
+        return x, y, x + w, y + h
 
     def _background(self) -> None:
         c = self.canvas
@@ -175,27 +235,64 @@ class ArcadeWindow:
 
     def on_tap(self, kind: str) -> None:
         if self.step is not None:
-            if kind == "double":
+            if kind == "single":
                 self._finish_calibration("Skipped: using the last calibration")
             return
-        if kind == "double":  # forward: play the game under the pointer
-            self.hub.open_game(GAMES[self.selected][0])
-        else:  # back: the previous game
-            self.selected = (self.selected - 1) % len(GAMES)
+        if kind == "single":  # forward: play the game (or recalibrate) under the frame
+            if self.selected == RECAL:
+                self.recalibrate()
+            else:
+                self._sfx("play")
+                self.hub.open_game(GAMES[self.selected][0])
+        else:  # the next game along; works with no motion at all
+            self._select(self.selected + 1 if self.selected != RECAL else 0, wrap=True)
             self._toast(GAMES[self.selected][1])
 
     def on_hold(self) -> None:
-        self.step, self.full, self.step_since = 0, True, time.monotonic()
+        self._start_calibration(full=False)
+
+    def recalibrate(self) -> None:
+        self._start_calibration(full=True)
+
+    def returned(self, game: str) -> None:
+        """Back from a game: frame the game just played and recentre to the hand's new grip."""
+        keys = [g[0] for g in GAMES]
+        if game in keys:
+            self.selected = self.last_game = keys.index(game)
+        self._start_calibration(full=False, quick=True)
+
+    def _start_calibration(self, full: bool, quick: bool = False) -> None:
+        if self.hub.latest_motion() is not None or full:
+            self._sfx("recal")
+        now = time.monotonic()
+        self.step, self.full, self.quick = 0, full, quick
+        self.step_since = self.step_started = now
+        self.nav = SnapNav()
+        self.pinned_since = None
+
+    def _select(self, item: int, wrap: bool = False) -> None:
+        if wrap and item != RECAL:
+            item %= len(GAMES)
+        if item != self.selected:
+            self.selected = item
+            if item != RECAL:
+                self.last_game = item
+            self._sfx("move")
+        else:
+            self._sfx("back")  # an edge: nowhere further that way
+
+    def _sfx(self, name: str) -> None:
+        sfx(name, bool(self.hub.settings.get("arcade_sound", True)))
 
     def on_motion(self, sample: Motion) -> None:
         if self.step is None:
             return
         name = WIZARD[self.step][0]
         if name == "rest":
-            still = math.sqrt(sample.gx ** 2 + sample.gy ** 2 + sample.gz ** 2) < 0.6
+            still = math.sqrt(sample.gx ** 2 + sample.gy ** 2 + sample.gz ** 2) < 1.0
             if not still:
                 self.step_since = time.monotonic()
-            if time.monotonic() - self.step_since < 1.3:
+            if time.monotonic() - self.step_since < (QUICK_REST_S if self.quick else REST_S):
                 return
         elif not self.hub.tilt.learn(name, sample, min_deg=14.0):
             return
@@ -206,10 +303,15 @@ class ArcadeWindow:
         if self.step >= len(WIZARD) or not self.full:
             if self.full:
                 self.hub.save_tilt()
-            self._finish_calibration("Calibrated! Tilt to point · ●● to play")
+            self._sfx("done")
+            self._finish_calibration("Centred ✓  flick the Omi to move · ● TAP to play" if not self.full
+                                     else "Calibrated ✓  flick the Omi to move · ● TAP to play")
+        else:
+            self._sfx("step")
 
     def _finish_calibration(self, message: str) -> None:
         self.step = None
+        self.nav = SnapNav()
         self._toast(message)
 
     def _toast(self, text: str) -> None:
@@ -217,16 +319,19 @@ class ArcadeWindow:
 
     def _key(self, event: tk.Event) -> None:
         key = event.keysym.lower()
+        arrows = {"right": (1, 0), "left": (-1, 0), "up": (0, -1), "down": (0, 1)}
         if key in ("return", "space"):
-            self.on_tap("double")
-        elif key in ("escape", "backspace"):
             self.on_tap("single")
-        elif key in ("right", "down"):
-            self.selected = (self.selected + (1 if key == "right" else 3)) % len(GAMES)
-        elif key in ("left", "up"):
-            self.selected = (self.selected - (1 if key == "left" else 3)) % len(GAMES)
+        elif key in ("escape", "backspace", "tab"):
+            self.on_tap("double")
+        elif key in arrows and self.step is None:
+            self._select(menu_step(self.selected, *arrows[key], self.last_game))
         elif key == "c":
-            self.on_hold()
+            self.recalibrate()
+        elif key == "m":
+            on = not self.hub.settings.get("arcade_sound", True)
+            self.hub.set_setting("arcade_sound", on)
+            self._toast("sound on" if on else "sound off")
 
     def refresh_scores(self) -> None:
         pass  # scores are read fresh every frame
@@ -238,35 +343,77 @@ class ArcadeWindow:
         now = time.monotonic()
         dt, self._last = now - self._last, now
         self.clock += dt
-        if self.step is not None and self.hub.latest_motion() is None and now - self.opened > 2.0:
-            self._finish_calibration("No motion stream: button mode (● back · ●● play)")
+        if self.step is not None and self.hub.latest_motion() is None and now - self.step_started > 1.5:
+            self._finish_calibration("No motion stream · ● TAP plays · ●● DOUBLE goes to the next game")
         stick = self.hub.stick()
         if stick is not None and self.step is None:
-            tx, ty = AW / 2 + stick[0] * AW * 0.46, AH * 0.56 - stick[1] * AH * 0.4
-            self.pointer[0] += (tx - self.pointer[0]) * min(1.0, dt * 10)
-            self.pointer[1] += (ty - self.pointer[1]) * min(1.0, dt * 10)
-            for i, (x, y, w, h) in enumerate(self.tiles):
-                if x - 8 <= self.pointer[0] <= x + w + 8 and y - 8 <= self.pointer[1] <= y + h + 8:
-                    self.selected = i
+            move = self.nav.feed(stick[0], stick[1])
+            if move is not None:
+                self._select(menu_step(self.selected, *move, self.last_game))
+            self._auto_recentre(stick, now)
+        target = self._box(self.selected)
+        ease = min(1.0, dt * 14)
+        self.glow = [g + (t - g) * ease for g, t in zip(self.glow, target)]
         c = self.canvas
         c.delete("dyn")
         self._grid()
         self._title()
+        self._status()
+        self._recal_button()
         for i, game in enumerate(GAMES):
             self._tile(i, game)
-        if stick is not None and self.step is None:
-            px, py = self.pointer
-            pulse = 3 * math.sin(self.clock * 8)
-            c.create_oval(px - 20 - pulse, py - 20 - pulse, px + 20 + pulse, py + 20 + pulse, outline=NEON, width=3, tags="dyn")
-            c.create_oval(px - 6, py - 6, px + 6, py + 6, fill="#ffffff", outline=NEON, width=2, tags="dyn")
-        self._footer(stick is not None)
+        self._frame()
+        self._footer(stick)
         if self.step is not None:
             self._calibration()
         text, at = self.toast
-        if text and now - at < 2.2:
-            fade = min(1.0, (now - at) / 2.2)
-            _round_rect(c, AW / 2 - 300, 140, AW / 2 + 300, 178, 18, fill="#1b0540", outline=NEON, width=2, tags="dyn")
+        if text and now - at < 2.6:
+            fade = min(1.0, (now - at) / 2.6)
+            round_rect(c, AW / 2 - 330, 140, AW / 2 + 330, 178, 18, fill="#1b0540", outline=NEON, width=2, tags="dyn")
             c.create_text(AW / 2, 159, text=text, fill=_mix((255, 255, 255), (255, 79, 216), fade), font=("Helvetica", 16, "bold"), tags="dyn")
+
+    def _auto_recentre(self, stick: tuple[float, float, str], now: float) -> None:
+        """Tilt jammed at an edge while the hand is still: the grip changed, so recentre."""
+        sample = self.hub.latest_motion()
+        still = sample is not None and math.sqrt(sample.gx ** 2 + sample.gy ** 2 + sample.gz ** 2) < 0.5
+        if max(abs(stick[0]), abs(stick[1])) > 0.85 and still:
+            if self.pinned_since is None:
+                self.pinned_since = now
+            elif now - self.pinned_since > PINNED_S:
+                self.hub.recentre()
+                self.pinned_since = None
+                self.nav = SnapNav()
+                self._sfx("done")
+                self._toast("Recentred to how you're holding it")
+        else:
+            self.pinned_since = None
+
+    def _status(self) -> None:
+        c, hub = self.canvas, self.hub
+        connected = hub.status.get() == "connected"
+        level = hub.battery_level
+        parts = ["OMI"] + ([f"{level}%"] if level is not None else []) + (["⚡"] if hub.charging else [])
+        parts.append("motion ✓" if hub.latest_motion() is not None else "no motion")
+        text = "  ".join(parts) if connected else f"OMI {hub.status.get()}"
+        round_rect(c, 24, 20, 24 + 30 + 10.5 * len(text), 62, 18, fill="#1b0540", outline="#3ddc84" if connected else "#ff6b6b", width=2, tags="dyn")
+        c.create_oval(36, 36, 46, 46, fill="#3ddc84" if connected else "#ff6b6b", outline="", tags="dyn")
+        c.create_text(54, 41, anchor="w", text=text, fill="#ffffff", font=("Helvetica", 13, "bold"), tags="dyn")
+
+    def _recal_button(self) -> None:
+        c = self.canvas
+        x0, y0, x1, y1 = RECAL_BOX
+        chosen = self.selected == RECAL
+        round_rect(c, x0, y0, x1, y1, 20, fill="#ff4fd8" if chosen else "#1b0540", outline=NEON, width=2, tags="dyn")
+        label = "⟲ RECALIBRATE" if chosen else "▲ ⟲ RECALIBRATE"
+        c.create_text((x0 + x1) / 2, (y0 + y1) / 2, text=label, fill="#ffffff", font=("Helvetica", 15, "bold"), tags="dyn")
+
+    def _frame(self) -> None:
+        """The selection frame: neon rings that glide from item to item."""
+        c = self.canvas
+        x0, y0, x1, y1 = self.glow
+        pulse = 2 + 2 * math.sin(self.clock * 6)
+        for k, colour, width in ((10 + pulse, "#3a0a52", 4), (6 + pulse, NEON, 4), (2, "#ffffff", 3)):
+            round_rect(c, x0 - k, y0 - k, x1 + k, y1 + k, 24, fill="", outline=colour, width=width, tags="dyn")
 
     def _grid(self) -> None:
         c, horizon = self.canvas, AH * 0.6
@@ -293,51 +440,71 @@ class ArcadeWindow:
     def _tile(self, i: int, game: tuple) -> None:
         c = self.canvas
         key, title, how, (top_colour, bottom_colour), icon = game
-        x, y, w, h = self.tiles[i]
+        x0, y0, x1, y1 = self._box(i)
         chosen = i == self.selected
-        grow = (6 + 3 * math.sin(self.clock * 6)) if chosen else 0
-        x0, y0, x1, y1 = x - grow, y - grow, x + w + grow, y + h + grow
-        if chosen:
-            for k, colour in ((14, "#3a0a52"), (8, NEON), (3, "#ffffff")):
-                _round_rect(c, x0 - k, y0 - k, x1 + k, y1 + k, 26, fill="", outline=colour, width=3, tags="dyn")
+        dim = 0.0 if chosen else 0.45  # the others fade back so the chosen game pops
+        top_rgb, bottom_rgb = (_hex(_mix(_hex(colour), (18, 0, 43), dim)) for colour in (top_colour, bottom_colour))
         steps = 10
         for s in range(steps):
-            _round_rect(c, x0, y0 + (y1 - y0) * s / steps, x1, y1, 22,
-                        fill=_mix(_hex(top_colour), _hex(bottom_colour), s / (steps - 1)), outline="", tags="dyn")
-        _round_rect(c, x0, y0, x1, y1, 22, fill="", outline="#ffffff" if chosen else "#2b1150", width=3, tags="dyn")
-        _icon(c, icon, x0 + 62, y0 + (y1 - y0) / 2 - 8, 36 + grow * 0.6, "dyn")
+            round_rect(c, x0, y0 + (y1 - y0) * s / steps, x1, y1, 22,
+                       fill=_mix(top_rgb, bottom_rgb, s / (steps - 1)), outline="", tags="dyn")
+        round_rect(c, x0, y0, x1, y1, 22, fill="", outline="#ffffff" if chosen else "#2b1150", width=3, tags="dyn")
+        _icon(c, icon, x0 + 62, y0 + (y1 - y0) / 2 - 8, 42 if chosen else 34, "dyn")
         c.create_text(x0 + 118, y0 + 30, anchor="w", text=title, fill="#1a0033", font=("Helvetica", 19, "bold italic"), tags="dyn")
         c.create_text(x0 + 116, y0 + 28, anchor="w", text=title, fill="#ffffff", font=("Helvetica", 19, "bold italic"), tags="dyn")
-        c.create_text(x0 + 118, y0 + 62, anchor="nw", text=how, fill="#fff8e6", width=w - 130, font=("Helvetica", 12, "bold"), tags="dyn")
+        c.create_text(x0 + 118, y0 + 62, anchor="nw", text=how, fill="#fff8e6", width=x1 - x0 - 130, font=("Helvetica", 12, "bold"), tags="dyn")
         best = self.hub.best(key)
         badge = "NEW!" if best is None else (f"BEST {best:.1f}s" if key == "corn" else f"BEST {int(best):,}")
-        _round_rect(c, x1 - 118, y1 - 40, x1 - 14, y1 - 12, 12, fill="#1a0033", outline="", tags="dyn")
+        round_rect(c, x1 - 118, y1 - 40, x1 - 14, y1 - 12, 12, fill="#1a0033", outline="", tags="dyn")
         c.create_text(x1 - 66, y1 - 26, text=badge, fill="#ffe66d", font=("Helvetica", 12, "bold"), tags="dyn")
         if chosen:
-            c.create_text(x0 + 118, y1 - 26, anchor="w", text="●● PLAY", fill="#ffffff", font=("Helvetica", 14, "bold"), tags="dyn")
+            chip(c, x0 + 16, y1 - 26, "tap", "PLAY", size=13)
 
-    def _footer(self, motion: bool) -> None:
+    def _footer(self, stick: tuple[float, float, str] | None) -> None:
+        """The legend: what every control does here, plus a little gauge of the live tilt."""
         c = self.canvas
-        _round_rect(c, 60, AH - 70, AW - 60, AH - 24, 22, fill="#1b0540", outline=NEON, width=2, tags="dyn")
-        steer = "tilt: point" if motion else "no motion: ● cycles the games"
-        c.create_text(AW / 2, AH - 47, text=f"{steer}   ·   ●● double tap: play   ·   ● tap: back   ·   hold: recalibrate",
-                      fill="#ffffff", font=("Helvetica", 15, "bold"), tags="dyn")
+        y0, y1 = AH - 84, AH - 18
+        round_rect(c, 40, y0, AW - 40, y1, 26, fill="#1b0540", outline=NEON, width=2, tags="dyn")
+        cy = (y0 + y1) / 2
+        left = 40
+        if stick is not None:
+            gx, r = 92, 24
+            c.create_oval(gx - r, cy - r, gx + r, cy + r, outline="#5a2a8a", width=2, tags="dyn")
+            ring = r * SnapNav.FIRE
+            c.create_oval(gx - ring, cy - ring, gx + ring, cy + ring, outline="#8a4ab0", dash=(2, 3), tags="dyn")
+            dx, dy = stick[0] * r, -stick[1] * r
+            colour = "#ff4fd8" if self.nav.armed else "#ffffff"
+            c.create_line(gx, cy, gx + dx, cy + dy, fill=colour, width=3, tags="dyn")
+            c.create_oval(gx + dx - 6, cy + dy - 6, gx + dx + 6, cy + dy + 6, fill=colour, outline="", tags="dyn")
+            left = 130
+        items = legend("menu", motion=stick is not None)
+        draw_legend(c, (left + AW - 40) / 2, cy, items, size=16, max_width=AW - 40 - left - 30)
+        c.create_text(AW - 44, AH - 7, anchor="e", text="keys: arrows move · space play · esc next · C recalibrate · M sound",
+                      fill="#7a6a9a", font=("Helvetica", 10), tags="dyn")
 
     def _calibration(self) -> None:
         c = self.canvas
-        c.create_rectangle(0, 0, AW, AH, fill="#0d0221", stipple="gray75", outline="", tags="dyn")
         name, big, small = WIZARD[self.step or 0]
+        if self.quick:  # coming back from a game: a small card, not the whole wizard
+            round_rect(c, AW / 2 - 250, AH / 2 - 70, AW / 2 + 250, AH / 2 + 70, 26, fill="#1b0540", outline="#3ddc84", width=4, tags="dyn")
+            c.create_text(AW / 2, AH / 2 - 34, text="WELCOME BACK · RECENTRING", fill="#00e5ff", font=("Helvetica", 15, "bold"), tags="dyn")
+            c.create_text(AW / 2, AH / 2 + 4, text="hold the Omi how you'll play…", fill="#ffffff", font=("Helvetica", 20, "bold"), tags="dyn")
+            ring = (time.monotonic() - self.step_since) / QUICK_REST_S
+            c.create_rectangle(AW / 2 - 180, AH / 2 + 36, AW / 2 + 180, AH / 2 + 46, outline="#3ddc84", tags="dyn")
+            c.create_rectangle(AW / 2 - 180, AH / 2 + 36, AW / 2 - 180 + 360 * min(1.0, ring), AH / 2 + 46, fill="#3ddc84", outline="", tags="dyn")
+            return
+        c.create_rectangle(0, 0, AW, AH, fill="#0d0221", stipple="gray75", outline="", tags="dyn")
         total = len(WIZARD) if self.full else 1
-        _round_rect(c, AW / 2 - 330, AH / 2 - 170, AW / 2 + 330, AH / 2 + 170, 30, fill="#1b0540", outline=NEON, width=4, tags="dyn")
+        round_rect(c, AW / 2 - 330, AH / 2 - 170, AW / 2 + 330, AH / 2 + 170, 30, fill="#1b0540", outline=NEON, width=4, tags="dyn")
         c.create_text(AW / 2, AH / 2 - 128, text=f"CALIBRATING · STEP {(self.step or 0) + 1} OF {total}", fill="#00e5ff", font=("Helvetica", 16, "bold"), tags="dyn")
         for dx, colour in ((3, "#ff2bd6"), (0, "#ffffff")):
             c.create_text(AW / 2 + dx, AH / 2 - 70 + dx, text=big, fill=colour, font=("Helvetica", 44, "bold italic"), tags="dyn")
         c.create_text(AW / 2, AH / 2 - 20, text=small, fill="#ffe66d", font=("Helvetica", 17, "bold"), tags="dyn")
         # the pendant as a disc that tilts the way we want
-        cx, cy = AW / 2, AH / 2 + 70
+        cx, cy = AW / 2, AH / 2 + 60
         wobble = math.sin(self.clock * 3)
         if name == "rest":
-            ring = (time.monotonic() - self.step_since) / 1.3
+            ring = (time.monotonic() - self.step_since) / REST_S
             c.create_arc(cx - 46, cy - 46, cx + 46, cy + 46, start=90, extent=-360 * min(1.0, ring), style="arc", outline="#3ddc84", width=6, tags="dyn")
             c.create_oval(cx - 30, cy - 30, cx + 30, cy + 30, fill="#e8e8f0", outline="#9c8cff", width=3, tags="dyn")
         elif name == "right":
@@ -349,7 +516,7 @@ class ArcadeWindow:
             squash = 0.5 + 0.3 * wobble
             c.create_oval(cx - 60, cy - 30 * squash, cx + 60, cy + 30 * squash, fill="#e8e8f0", outline="#9c8cff", width=3, tags="dyn")
             c.create_text(cx, cy - 70, text="▲", fill=NEON, font=("Helvetica", 34, "bold"), tags="dyn")
-        c.create_text(AW / 2, AH / 2 + 142, text="●● double tap to skip", fill="#cfc4ff", font=("Helvetica", 13, "bold"), tags="dyn")
+        draw_legend(c, AW / 2, AH / 2 + 140, (("tap", "SKIP"),), size=14)
 
     def close(self) -> None:
         self.top.after_cancel(self._job)
@@ -366,10 +533,10 @@ class MiniGameWindow:
     """Corn Maze, Star Dodger and Omi Catch. The launcher calls on_tap / on_shake / on_hold."""
 
     TITLES = {"corn": "CORN MAZE", "dodger": "STAR DODGER", "catch": "OMI CATCH"}
-    HELP = {
-        "corn": "tilt: roll the pumpkin  ·  ● tap: brake  ·  hold: pause",
-        "dodger": "tilt: fly  ·  ● tap: fire  ·  shake: bomb  ·  hold: pause",
-        "catch": "tilt: move the basket  ·  catch ★  ·  dodge bombs  ·  hold: pause",
+    HOW = {
+        "corn": "roll the pumpkin home to the red barn",
+        "dodger": "dodge the rocks, blast them for points",
+        "catch": "catch the ★ stars, dodge the bombs",
     }
 
     def __init__(self, hub: Hub, name: str, on_close: Callable[[], None]) -> None:
@@ -397,6 +564,7 @@ class MiniGameWindow:
         seed = random.randrange(1 << 30)
         self.game = {"corn": MarbleMaze, "dodger": StarDodger, "catch": Catch}[self.name](seed=seed)
         self.state = "ready"
+        self.over_at = 0.0
         self.recorded, self.maze_level = False, 0
         self.canvas.delete("all")
         self.hub.recentre()
@@ -408,23 +576,24 @@ class MiniGameWindow:
     # --- the Omi's buttons ----------------------------------------------------------------
 
     def on_tap(self, kind: str) -> None:
-        double = kind == "double"
+        """One tap: forward (start, resume, again, next level). Double tap: back to the Arcade."""
+        forward = kind == "single"
         if self.state == "playing":
             if self.name == "corn" and self.game.won:
-                if double:
-                    self.game.next_level()
-                else:
-                    self.close()
+                self.game.next_level() if forward else self.close()
                 return
-            self.taps += 2 if double else 1
+            self.taps += 1 if forward else 2
             self.flash = 6
-        elif self.state in ("ready", "paused") and double:
-            self.state = "playing"
-        elif self.state == "over" and double:
-            self.new_game()
-            self.state = "playing"
-        elif not double:
+            return
+        if not forward:
             self.close()  # back to the Arcade
+            return
+        if self.state == "over":
+            if time.monotonic() - self.over_at < 0.8:
+                return  # a late tap from play should not restart at once
+            self.new_game()
+        self.hub.recentre()  # start or resume from however you're holding it now
+        self.state = "playing"
 
     def on_shake(self) -> None:
         if self.state == "playing":
@@ -437,12 +606,10 @@ class MiniGameWindow:
     def _key_down(self, event: tk.Event) -> None:
         key = event.keysym.lower()
         self.keys.add(key)
-        if key == "space":
-            self.on_tap("single" if self.state == "playing" else "double")
-        elif key == "return":
-            self.on_tap("double")
+        if key in ("space", "return"):
+            self.on_tap("single")
         elif key == "escape":
-            self.on_hold() if self.state == "playing" else self.on_tap("single")
+            self.on_hold() if self.state == "playing" else self.on_tap("double")
         elif key == "b":
             self.on_shake()
         elif key == "c":
@@ -465,6 +632,7 @@ class MiniGameWindow:
             self.game.step(FRAME_MS / 1000, Stick(x, y, self.taps, self.shake))
             if getattr(self.game, "over", False):
                 self.state = "over"
+                self.over_at = time.monotonic()
         self.taps, self.shake = 0, False
         if self.state == "over" and not self.recorded:
             self.recorded = True
@@ -477,22 +645,24 @@ class MiniGameWindow:
 
     def _hud(self, label: str) -> None:
         c = self.canvas
-        c.create_rectangle(0, H - 30, W, H, fill="#070b18", outline="", tags="dyn")
-        c.create_text(12, H - 15, anchor="w", text=f"steer: {label}   ·   {self.HELP[self.name]}", fill="#c9d2f0", font=("Helvetica", 12, "bold"), tags="dyn")
-        banners = {
-            "ready": (self.TITLES[self.name], "●● double tap to start    ·    ● tap: back to the Arcade", "#ffd23f"),
-            "paused": ("PAUSED", "●● double tap: carry on    ·    ● tap: back to the Arcade", "#7fd4ff"),
-        }
-        if self.state == "over":
-            best = int(self.hub.best(self.name) or 0)
-            score = f"score {self.game.score} · best {best}\n" if hasattr(self.game, "score") else ""
-            banners["over"] = ("GAME OVER", f"{score}●● double tap: play again    ·    ● tap: back to the Arcade", "#ff6b5b")
-        if self.state in banners:
-            title, text, colour = banners[self.state]
-            _round_rect(c, W / 2 - 290, H / 2 - 100, W / 2 + 290, H / 2 + 86, 26, fill="#12002b", outline=colour, width=4, stipple="gray75", tags="dyn")
-            for dx, col in ((3, "#000000"), (0, colour)):
-                c.create_text(W / 2 + dx, H / 2 - 45 + dx, text=title, fill=col, font=("Helvetica", 40, "bold italic"), tags="dyn")
-            c.create_text(W / 2, H / 2 + 28, text=text, fill="white", font=("Helvetica", 15, "bold"), justify="center", tags="dyn")
+        c.create_rectangle(0, H - 34, W, H, fill="#070b18", outline="", tags="dyn")
+        draw_legend(c, W / 2, H - 17, legend(self.name, motion=label != "keys"), size=12, max_width=W - 24)
+        colours = {"ready": "#ffd23f", "paused": "#7fd4ff", "over": "#ff6b5b"}
+        if self.state not in colours:
+            return
+        title = {"ready": self.TITLES[self.name], "paused": "PAUSED", "over": "GAME OVER"}[self.state]
+        sub = ""
+        if self.state == "over" and hasattr(self.game, "score"):
+            sub = f"score {self.game.score} · best {int(self.hub.best(self.name) or 0)}"
+        elif self.state == "ready":
+            sub = self.HOW[self.name]
+        colour = colours[self.state]
+        round_rect(c, W / 2 - 300, H / 2 - 100, W / 2 + 300, H / 2 + 86, 26, fill="#12002b", outline=colour, width=4, tags="dyn")
+        for dx, col in ((3, "#000000"), (0, colour)):
+            c.create_text(W / 2 + dx, H / 2 - 50 + dx, text=title, fill=col, font=("Helvetica", 40, "bold italic"), tags="dyn")
+        if sub:
+            c.create_text(W / 2, H / 2 + 2, text=sub, fill="#e8e8ff", font=("Helvetica", 15, "bold"), tags="dyn")
+        draw_legend(c, W / 2, H / 2 + 46, legend(self.name, self.state), size=18)
 
     # --- Corn Maze ------------------------------------------------------------------------
 
@@ -584,10 +754,11 @@ class MiniGameWindow:
             if not self.recorded:
                 self.recorded = True
                 self.hub.record_score("corn", g.elapsed, lower_is_better=True)
-            _round_rect(c, W / 2 - 280, H / 2 - 80, W / 2 + 280, H / 2 + 70, 24, fill="#fff4d6", outline="#c0282d", width=4, tags="dyn")
-            c.create_text(W / 2, H / 2 - 30, text="HOME TO THE BARN!", fill="#c0282d", font=("Helvetica", 32, "bold italic"), tags="dyn")
-            c.create_text(W / 2, H / 2 + 20, text=f"level {g.level} in {g.elapsed:.1f} s\n●● double tap: bigger field    ·    ● tap: back to the Arcade",
-                          fill="#5c3a18", font=("Helvetica", 15, "bold"), justify="center", tags="dyn")
+            round_rect(c, W / 2 - 290, H / 2 - 90, W / 2 + 290, H / 2 + 80, 24, fill="#fff4d6", outline="#c0282d", width=4, tags="dyn")
+            c.create_text(W / 2, H / 2 - 44, text="HOME TO THE BARN!", fill="#c0282d", font=("Helvetica", 32, "bold italic"), tags="dyn")
+            c.create_text(W / 2, H / 2 - 4, text=f"level {g.level} in {g.elapsed:.1f} s", fill="#5c3a18", font=("Helvetica", 16, "bold"), tags="dyn")
+            round_rect(c, W / 2 - 275, H / 2 + 22, W / 2 + 275, H / 2 + 66, 20, fill="#12002b", outline="", tags="dyn")
+            draw_legend(c, W / 2, H / 2 + 44, legend("corn", "won"), size=16)
         else:
             self.recorded = False
 

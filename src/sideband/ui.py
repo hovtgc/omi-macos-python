@@ -783,6 +783,7 @@ class Hub:
         game, self.game = self.game, None
         if self.arcade is not None:
             self.arcade.lift()
+            self.arcade.returned(self.game_name)  # recentre to however the hand holds it now
         flight = getattr(game, "game", None)
         if isinstance(game, GameWindow) and flight is not None and getattr(flight, "best", 0):
             self.record_score(self.game_name, float(flight.best))
