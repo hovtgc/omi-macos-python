@@ -65,7 +65,7 @@ Privacy: audio and transcripts stay on this Mac, in `~/Library/Application Suppo
 - **Controls (⌘2):** map single / double / triple / hold taps to Mac actions (open an app, keystroke, Shortcut, URL, volume, record, voice menu, …). Mappings work with every window closed.
   - 🧑 Keystroke actions need **System Settings → Privacy & Security → Accessibility → Sideband** switched on. The Controls window has a button that opens that page.
 - **Voice menu:** press ⌘L (or map a tap to *voice menu*) and speak into the pendant: "open arcade", "start recording", "summarize that", "play marble", "close".
-- **Arcade (⌘3):** played with the pendant alone. It calibrates motion as soon as it opens, and each step waits for 🧑 **one tap to lock it in**: hold it how you'll play and tap, then tilt right and tap, then tilt forward and tap (later only the first one). Tip the pendant toward a game to move one tile, like a d-pad (keep holding to keep moving; come back to centre to change direction), **tap** plays or goes forward, **double tap** goes back to the Arcade (in the menu: the next game), a **hold** pauses a game or recentres the menu. Up from the top row is ⟲ Recalibrate. Coming back from a game asks you to hold it how you'll play and tap to lock the centre again. The legend at the bottom of every screen always shows what each control does. Without motion (stock firmware) double taps cycle the games. Sky Ace 1943, Corn Maze, Star Dodger and Omi Catch steer by tilt and need motion (step 7); Omi Flap 3D and Voice Flap work on stock firmware.
+- **Arcade (⌘3):** you talk to it. 🧑 Tap the pendant (or click the mic bar at the bottom) and say what you want (clicking a game just plays it): "play sky ace", "the corn one", "play this" (the highlighted game: the one under the mouse, the one you named, or the one you just played), "recalibrate", "what can I play". Your words show up live, then the local LLM (the `llm` extra) picks the game; without it, keywords still work. The pendant mic stays on while the Arcade or a game is open (nothing is recorded), so you can say **"exit game"**, "pause" or "play again" mid-game. In a game, **tap** starts or goes forward, **double tap** goes back to the Arcade, a **hold** pauses. The first visit runs a short tilt calibration where each step locks with 🧑 **one tap**. The legend at the bottom of every screen shows what each control does. Sky Ace 1943, Corn Maze, Star Dodger and Omi Catch steer by tilt and need motion (step 7); Omi Flap 3D and Voice Flap work on stock firmware.
   - 🧑 **A hold means about one second, then let go.** Holding the button for 3 seconds turns the pendant off, and the pendant only reports a hold when released, so nothing can warn mid-press.
 
 ## 7. Optional: motion firmware for tilt games (Omi CV 1 only)
@@ -95,7 +95,7 @@ These use the pendant Sideband remembers; add `--address <id>` for another one.
 
 The flasher refuses a file whose checksum differs from the pinned one, and refuses any pendant that does not report `Omi CV 1`. It reboots the pendant when done (10–30 s). To go back to stock at any time, run step b again. To build the motion firmware yourself instead of using the release, see [firmware/README.md](firmware/README.md).
 
-Tilt then works holding the Omi in your hand, flat or upright. Wherever it is when a game starts counts as centre. For unusual grips, Arcade → **Calibrate tilt** takes three steps.
+Tilt then works holding the Omi in your hand, flat or upright. Wherever it is when a game starts counts as centre. For unusual grips, say "recalibrate" in the Arcade: three steps, one tap each.
 
 ## 8. Optional: keep the link alive at login
 
@@ -118,6 +118,6 @@ Use this *or* the launcher, not both at once: one process holds the pendant.
 | `stream 0 frames/s` while connected | The pendant paused audio; Bluetooth app → Reconnect now. |
 | Keystrokes do nothing | Accessibility → Sideband on; the first keystroke also asks for "System Events" control. |
 | Moved the project folder | `sideband build-app`, then allow Bluetooth / Accessibility again. |
-| Tilt goes the wrong way | Arcade → Calibrate tilt, or Recentre. |
+| Tilt goes the wrong way | In the Arcade, tap and say "recalibrate". |
 
 Useful commands: `sideband doctor`, `sideband open <launcher|transcriber|controls|arcade|bluetooth>`, `sideband models --download`, `sideband --help`.

@@ -103,5 +103,67 @@ class VoiceFlightTest(unittest.TestCase):
         self.assertTrue(game.alive and game.voice)
 
 
+
+class IngameCommandTest(unittest.TestCase):
+    def test_phrases(self) -> None:
+        from sideband.voice import ingame_command
+
+        for said in ("exit game", "exit", "quit the game", "back to the menu", "main menu", "leave", "go back to the arcade"):
+            self.assertEqual(ingame_command(said), "exit", said)
+        self.assertEqual(ingame_command("pause"), "pause")
+        self.assertEqual(ingame_command("wait a second"), "pause")
+        for said in ("play again", "resume", "continue", "restart", "start", "let's go"):
+            self.assertEqual(ingame_command(said), "go", said)
+        for said in ("nice shot", "oh no", "i'm going left", "the weather is nice", ""):
+            self.assertIsNone(ingame_command(said), said)
+
+
+class ArcadeIntentTest(unittest.TestCase):
+    KEYS = ["fighter", "flap", "corn", "dodger", "catch", "voice"]
+
+    def test_parse(self) -> None:
+        from sideband.llm import parse_arcade
+
+        self.assertEqual(parse_arcade("play fighter", self.KEYS, None), "play:fighter")
+        self.assertEqual(parse_arcade("Play corn\n", self.KEYS, None), "play:corn")
+        self.assertEqual(parse_arcade("play <dodger>", self.KEYS, None), "play:dodger")
+        self.assertEqual(parse_arcade("show catch", self.KEYS, None), "show:catch")
+        self.assertEqual(parse_arcade("play this", self.KEYS, "flap"), "play:flap")
+        self.assertEqual(parse_arcade("play", self.KEYS, "corn"), "play:corn")
+        self.assertEqual(parse_arcade("play pacman", self.KEYS, "corn"), "none")
+        self.assertEqual(parse_arcade("recalibrate", self.KEYS, None), "recalibrate")
+        self.assertEqual(parse_arcade("Sure! Let me", self.KEYS, None), "none")
+        self.assertEqual(parse_arcade("", self.KEYS, None), "none")
+
+    def test_prompt_names_the_highlighted_game(self) -> None:
+        from sideband.llm import arcade_messages
+
+        games = [("fighter", "SKY ACE 1943", "dogfight"), ("corn", "CORN MAZE", "maze")]
+        system = arcade_messages("play this", games, "corn")[0]["content"]
+        self.assertIn("Highlighted game: Corn Maze", system)
+        self.assertIn("- fighter: Sky Ace 1943", system)
+
+    def test_keyword_fallback(self) -> None:
+        from sideband.llm import guess_arcade
+        from sideband.voice import GAMES
+
+        self.assertEqual(guess_arcade("play the corn maze", GAMES, None), "play:corn")
+        self.assertEqual(guess_arcade("play this", GAMES, "catch"), "play:catch")
+        self.assertEqual(guess_arcade("play", GAMES, "catch"), "play:catch")
+        self.assertEqual(guess_arcade("recalibrate the controls", GAMES, None), "recalibrate")
+        self.assertEqual(guess_arcade("close the arcade", GAMES, None), "close")
+        self.assertEqual(guess_arcade("nice weather", GAMES, "catch"), "none")
+
+
+class MicMeterTest(unittest.TestCase):
+    def test_scale(self) -> None:
+        from sideband.voice import mic_meter
+
+        self.assertEqual(mic_meter(-90.0), 0.0)  # mic just switched on
+        self.assertEqual(mic_meter(-58.0), 0.0)
+        self.assertEqual(mic_meter(0.0), 1.0)
+        self.assertGreater(mic_meter(-30.0), mic_meter(-45.0))
+        self.assertTrue(0.3 < mic_meter(-36.0) < 0.7)
+
 if __name__ == "__main__":
     unittest.main()

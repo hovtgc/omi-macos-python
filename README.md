@@ -9,7 +9,7 @@ Sideband is a Python Mac app that turns an Omi pendant into a Mac companion:
 | 🎙 | **Transcriber** | Tap to record (or pick any audio file). Whisper transcribes it on the Mac; a local LLM speaks a short callout, writes a summary and action items, and answers questions about one recording or all of them. Audio deletes itself after 24 hours; transcripts stay. |
 | 🎛 | **Controls** | Map single / double / triple / hold taps to Mac actions: open apps, keystrokes, Shortcuts, URLs, volume, record, voice menu, AppleScript, shell. |
 | 🗣 | **Voice menu** | Press ⌘L or tap, then say "start recording", "summarize that", "open arcade", "close". |
-| 🕹 | **Omi Arcade** | Played entirely with the pendant: calibration locks in with one tap (on open and every time you leave a game), tipping the pendant moves one tile like a d-pad, tap plays, double tap goes back (or to the next game in the menu). A colour-coded legend on every screen says what each control does right now. **Sky Ace 1943** (a 3D WWII dogfight), Omi Flap 3D, **Corn Maze**, Star Dodger, Omi Catch, Voice Flap. |
+| 🕹 | **Omi Arcade** | You talk to it: tap the pendant (or click the mic bar), say "play sky ace", "the corn one" or "play this", and the local LLM works out what you meant. The mic stays on in games, so "exit game", "pause" and "play again" work mid-game. In a game: tilt steers, tap goes forward, double tap goes back. A colour-coded legend on every screen says what each control does right now. **Sky Ace 1943** (a 3D WWII dogfight), Omi Flap 3D, **Corn Maze**, Star Dodger, Omi Catch, Voice Flap. |
 | 📶 | **Bluetooth** | Connect, scan, switch pendants, and see what the link is doing. |
 
 It runs Whisper large-v3-turbo, Qwen2.5-7B (MLX), Vosk and macOS speech locally. There is no account, no cloud, and no telemetry. MIT licensed. Not affiliated with Based Hardware; this is not the Omi phone app.
@@ -51,7 +51,7 @@ Omi pendant ──Bluetooth──▶ Sideband.app (holds the permission)
                               └─ launcher: one connection shared by the apps
                                    ├─ recorder → Whisper → transcript.md → local LLM → summary / answers
                                    ├─ taps → your Mac actions      ├─ voice menu (Vosk)
-                                   └─ Arcade (taps, tilt, shake)   └─ Bluetooth tools
+                                   └─ Arcade (voice, taps, tilt, shake)   └─ Bluetooth tools
 ```
 
 Why an app wrapper? macOS only gives Bluetooth to the app that started a process, so Python run from a terminal, IDE or agent is killed silently. `Sideband.app` is a tiny ad-hoc-signed bundle that holds the permission and runs this repo's Python.

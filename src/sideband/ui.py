@@ -37,15 +37,15 @@ from sideband.inputs import (
     button_kind,
     input_name,
 )
-from sideband.motion import MOTION_UUID, Motion, ShakeDetector, Tilt2D, parse_motion, steady
+from sideband.motion import MOTION_UUID, Motion, ShakeDetector, ShakeGate, Tilt2D, parse_motion, steady
 from sideband.protocol import AUDIO_CODEC_UUID, AUDIO_DATA_UUID, BATTERY_LEVEL_UUID, codec_name, strip_packet
 from sideband.llm import Doc, Job, LocalLLM, ask_all_messages, ask_messages, clean_summary, pick_context, summary_messages, transcript_text, with_summary
-from sideband.llm import callout_messages, callout_of, clean_callout, with_callout
+from sideband.llm import arcade_messages, callout_messages, callout_of, clean_callout, guess_arcade, parse_arcade, with_callout
 from sideband.speech import Speaker
 from sideband.llm import title as transcript_title
 from sideband.recordings import list_recordings, new_path
 from sideband.transcribe import Transcriber
-from sideband.voice import VoiceListener, model_path
+from sideband.voice import GAMES as SPOKEN_GAMES, VoiceListener, ingame_command, mic_meter, model_path
 
 PUMP_MS = 10
 STEADY_S = 1.0  # recentring uses the median of this much motion
@@ -240,6 +240,7 @@ class Hub:
         self.tilt = Tilt2D()
         self._load_tilt()
         self.shaker = ShakeDetector()
+        self.shake_gate = ShakeGate()  # a button press is not a shake
         self.last_motion: Motion | None = None
         self.motion_at = 0.0
         self.recent_motion: list[tuple[float, Motion]] = []  # the last STEADY_S of samples
@@ -263,6 +264,9 @@ class Hub:
         self.menu_voice: VoiceListener | None = None
         self.menu_until: float | None = None
         self.menu_mic_was_on = False
+        self.ear: VoiceListener | None = None  # the Arcade's open-vocabulary listener: menu requests, "exit game"
+        self.ear_fired = False  # an in-game command already ran for the phrase being said
+        self.caption: tuple[str, float] = ("", 0.0)  # what the pendant last heard, and when
         self.windows: list[object] = []  # open app windows, most recent last, for "close"
         self.llm: LocalLLM | None = None
         self.job_ids = 0
@@ -390,6 +394,8 @@ class Hub:
 
             if self.arcade is None:
                 self.arcade = ArcadeWindow(self)
+                self._route_mic()
+                self._assistant_warm()
             self.arcade.lift()
             self._opened(self.arcade)
         else:
@@ -409,6 +415,7 @@ class Hub:
             self.transcriber_win = None
         elif window is self.arcade:
             self.arcade = None
+            self._route_mic()
         elif window is self.bluetooth:
             self.bluetooth = None
 
@@ -579,6 +586,7 @@ class Hub:
         self.radio.set_mic(self.menu_mic_was_on)
         self.menu_button.configure(text="🎤 Voice  ⌘L")
         self.menu_state.set(note)
+        self._route_mic()
 
     def _run_menu(self, command: str) -> None:
         self.log(f"voice menu: {command}")
@@ -756,11 +764,115 @@ class Hub:
                 lambda text: self.post("voice_text", text),
             )
             self.voice.start()
-            self.game = GameWindow(self.root, self._game_closed, voice=True, voice_status=lambda: (self.voice_on, self.voice_heard))
+            self.game = GameWindow(self.root, self._game_closed, voice=True, voice_status=lambda: (self.voice_on, self.voice_heard), ear=self.ear_state)
             self.log("Voice Flap open: tap the pendant to unmute, say go left / right / up / down (nothing recorded)")
         else:
-            self.game = GameWindow(self.root, self._game_closed, self._pendant_steer, self._game_key)
+            self.game = GameWindow(self.root, self._game_closed, self._pendant_steer, self._game_key, ear=self.ear_state)
             self.log("Omi Flap 3D open: taps flap instead of running actions")
+
+    # --- Arcade voice: an open-vocabulary listener while the Arcade or a game is open ------
+
+    def _route_mic(self) -> None:
+        """Give the pendant mic to the Arcade's listener while the Arcade or one of its games is open.
+        Voice Flap and the launcher's voice menu run their own listeners and take the mic while they do."""
+        if self.voice is not None or self.menu_until is not None:
+            return
+        wanted = self.arcade is not None or self.game is not None
+        if not wanted:
+            if self.ear is not None and self.radio.pcm_sink == self.ear.feed:
+                self.radio.pcm_sink = None
+                self.radio.set_mic(False)
+            return
+        if self.ear is None:
+            self.ear = VoiceListener(
+                model_path(self.app.support_dir),
+                lambda text: self.post("ear_said", text, True),
+                lambda text: self.post("ear_said", text, False),
+                free=True,
+            )
+            self.ear.start()
+        if self.radio.pcm_sink == self.ear.feed and self.radio.mic_on:
+            return  # already listening
+        if self.radio.codec == "unread":
+            return  # not connected yet: retried on "codec"
+        error = self.radio.set_mic(True)
+        if error:
+            self.log(f"arcade voice: {error}")
+            return
+        self.ear.reset()
+        self.radio.pcm_sink = self.ear.feed
+
+    def _on_ear(self, text: str, final: bool) -> None:
+        """Speech while the Arcade is open: in a game, pick out exit / pause / play again at once;
+        in the menu, hand the finished phrase to the Arcade (which asks the LLM)."""
+        if text == "listening":
+            return
+        self.caption = (text, time.monotonic())
+        if self.game is not None:
+            if not self.ear_fired:
+                command = ingame_command(text)
+                if command is not None:
+                    self.ear_fired = True
+                    self.log(f"arcade voice: “{text}” → {command}")
+                    label = {"exit": "EXIT", "pause": "PAUSE", "go": "GO"}[command]
+                    self.caption = (f"“{text}”  →  {label}", time.monotonic())
+                    self._game_voice(command)
+            if final:
+                self.ear_fired = False
+            return
+        if self.arcade is not None:
+            self.arcade.on_speech(text, final)
+
+    def mic_problem(self) -> str | None:
+        """Why the Arcade can't hear you, in words, or None when audio is flowing."""
+        if self.status.get() != "connected":
+            return "Connect your Omi to talk (its mic does the listening)"
+        self._route_mic()
+        if not self.radio.mic_on:
+            return f"The Omi's mic isn't on yet (codec {self.radio.codec}) · give it a second and tap again"
+        if self.stream_rate is not None and self.stream_rate < 5:
+            return "The Omi isn't sending audio · reconnect it in the Bluetooth app"
+        return None
+
+    def ear_state(self) -> tuple[float | None, str, float]:
+        """For the mic HUD: level 0..1 (None with the mic off), the last words heard, and their age in seconds."""
+        level = mic_meter(self.radio.level_db) if self.radio.mic_on else None
+        text, at = self.caption
+        return level, text, time.monotonic() - at
+
+    def _game_voice(self, command: str) -> None:
+        game = self.game
+        if game is None:
+            return
+        if command == "exit":
+            game.close()
+        elif command == "pause":
+            game.on_hold()
+        elif command == "go" and not getattr(game, "playing", False):
+            game.on_tap("single")
+
+    def arcade_intent(self, heard: str, selected: str | None) -> None:
+        """What does the player want? The local LLM decides; keywords stand in when it can't."""
+        from sideband.arcade import GAMES
+
+        games = [(key, title, how) for key, title, how, *_rest in GAMES]
+        self._job(arcade_messages(heard, games, selected), "arcade_llm", heard, selected, max_tokens=8)
+
+    def _on_arcade_llm(self, reply: str, error: str, heard: str, selected: str | None) -> None:
+        from sideband.arcade import GAMES
+
+        keys = [g[0] for g in GAMES]
+        intent = "none" if error else parse_arcade(reply, keys, selected)
+        if intent == "none":  # no model, or it shrugged: try plain keywords
+            intent = guess_arcade(heard, {**SPOKEN_GAMES, "voice": "voice"}, selected)
+        self.log(f"arcade: “{heard}” → {intent}" + (f" (assistant: {error})" if error else ""))
+        if self.arcade is not None:
+            self.arcade.on_intent(intent, heard)
+
+    def _assistant_warm(self) -> None:
+        """Load the LLM in the background so the first spoken request answers quickly."""
+        if self.llm is None or not self.llm.ready:
+            self._job([{"role": "user", "content": "ok"}], "llm_warm", max_tokens=1)
 
     def _toggle_voice(self) -> None:
         if self.voice is None:
@@ -776,8 +888,12 @@ class Hub:
             self.voice_on = True
             self.log("voice: listening")
         else:
-            self.radio.pcm_sink = None
-            self.radio.set_mic(False)
+            if self.ear is not None:  # muted for flying, still listening for "exit game"
+                self.ear.reset()
+                self.radio.pcm_sink = self.ear.feed
+            else:
+                self.radio.pcm_sink = None
+                self.radio.set_mic(False)
             self.voice_on = False
             self.log("voice: muted")
 
@@ -794,6 +910,8 @@ class Hub:
             self.radio.set_mic(False)
             self.voice.close()
             self.voice, self.voice_on = None, False
+        self.ear_fired = False
+        self._route_mic()
         self.log("game closed")
 
     def stick(self) -> tuple[float, float, str] | None:
@@ -875,6 +993,7 @@ class Hub:
     # --- events ----------------------------------------------------------------------------
 
     def _on_button(self, raw: bytes, at: float) -> None:
+        self.shake_gate.button(at)
         code = button_code(raw)
         kind = button_kind(code)
         tap = kind in ("single", "double")
@@ -909,9 +1028,7 @@ class Hub:
             self.recent_motion.pop(0)
         self.motion_count += 1
         if self.shaker.feed(sample, at):
-            self.log("shake")
-            if self.game is not None:
-                self.game.on_shake()
+            self.shake_gate.shake(at)  # fires from _pump unless a button event shows it was a press
         if self.arcade is not None:
             self.arcade.on_motion(sample)
         if self.controls is not None:
@@ -925,6 +1042,7 @@ class Hub:
                 self.bluetooth.add_log(str(rest[0]) + (f" — {self.radio.last_error}" if "not reachable" in str(rest[0]) else ""))
             if rest[0] == "connected":
                 self._remember_address()
+                self._route_mic()  # the Arcade may have opened before the pendant was there
         elif kind == "scan_result":
             if self.bluetooth is not None:
                 self.bluetooth.scan_result(rest[0], str(rest[1]))  # type: ignore[arg-type]
@@ -932,10 +1050,20 @@ class Hub:
             self.device.set(str(rest[0]))
         elif kind == "codec":
             self.codec.set(f"codec {rest[0]}")
+            self._route_mic()  # the mic can only decode once the codec is known
         elif kind == "voice_cmd":
             if self.game is not None and self.voice_on:
-                self.game.command(str(rest[0]))
+                if rest[0] in ("exit", "quit"):
+                    self.game.close()  # "exit game" leaves Voice Flap too
+                else:
+                    self.game.command(str(rest[0]))
                 self.log(f"voice: {rest[0]}")
+        elif kind == "ear_said":
+            self._on_ear(str(rest[0]), bool(rest[1]))
+        elif kind == "arcade_llm":
+            self._on_arcade_llm(str(rest[1]), str(rest[2]), str(rest[3]), rest[4])  # type: ignore[arg-type]
+        elif kind == "llm_warm":
+            pass
         elif kind == "llm_status":
             self.llm_status.set(f"assistant: {rest[0]}")
             self.log(f"assistant: {rest[0]}")
@@ -1002,6 +1130,10 @@ class Hub:
                 break
             self._handle(*event)
         now = time.monotonic()
+        if self.shake_gate.due(now):
+            self.log("shake")
+            if self.game is not None:
+                self.game.on_shake()
         for gesture in self.decoder.poll(now):
             self.fire(gesture)
         if self.menu_until is not None and now > self.menu_until:
@@ -1040,6 +1172,8 @@ class Hub:
         self.transcriber.close()
         if self.menu_voice is not None:
             self.menu_voice.close()
+        if self.ear is not None:
+            self.ear.close()
         if self.llm is not None:
             self.llm.close()
         self.speaker.stop()

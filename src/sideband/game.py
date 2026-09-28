@@ -18,7 +18,7 @@ import tkinter as tk
 from dataclasses import dataclass, field
 from typing import Callable
 
-from sideband.legend import draw_legend, legend
+from sideband.legend import draw_ear, draw_legend, legend
 
 # World
 HALF_W, CEIL = 6.0, 8.0
@@ -188,7 +188,9 @@ class GameWindow:
         on_key: Callable[[str], None] = lambda _k: None,
         voice: bool = False,
         voice_status: Callable[[], tuple[bool, str]] = lambda: (False, ""),
+        ear: Callable[[], tuple[float | None, str, float]] = lambda: (None, "", 99.0),
     ) -> None:
+        self.ear = ear  # the pendant mic: level, last words heard, their age
         self.game = Flight(seed=random.randrange(1 << 30), voice=voice)
         self.voice = voice
         self.voice_status = voice_status
@@ -427,12 +429,13 @@ class GameWindow:
             c.create_rectangle(bx + 65, HEIGHT - 25, bx + 65 + 63 * self.steer_now, HEIGHT - 15, fill="#ffd84d", outline="", tags="dyn")
         if self.voice:
             self._voice_hud()
+        draw_ear(c, WIDTH - 10, HEIGHT - 56, *self.ear())
         if not g.started:
             hint = ("then tap for the mic and say go left · right · up · down" if self.voice
                     else "fly the ball through the glowing gaps")
             self._banner("VOICE FLAP" if self.voice else "OMI FLAP 3D", hint, legend(name, "ready"), "#ffd23f")
         elif not g.alive:
-            c.create_rectangle(0, 0, WIDTH, HEIGHT, fill="#b3261e", stipple="gray25", outline="", tags="dyn")
+            c.create_rectangle(6, 6, WIDTH - 6, HEIGHT - 6, outline="#ff4d4d", width=12, tags="dyn")
             self._banner("CRASHED", f"score {g.score}  ·  best {g.best}", legend(name, "over"), "#ff6b5b")
         elif self.paused:
             self._banner("PAUSED", "", legend(name, "paused"), "#7fd4ff")
