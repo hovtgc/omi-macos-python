@@ -790,6 +790,10 @@ class Hub:
                 free=True,
             )
             self.ear.start()
+        if self.radio.pcm_sink == self.ear.feed and self.radio.mic_on:
+            return  # already listening
+        if self.radio.codec == "unread":
+            return  # not connected yet: retried on "codec"
         error = self.radio.set_mic(True)
         if error:
             self.log(f"arcade voice: {error}")
@@ -817,6 +821,17 @@ class Hub:
             return
         if self.arcade is not None:
             self.arcade.on_speech(text, final)
+
+    def mic_problem(self) -> str | None:
+        """Why the Arcade can't hear you, in words, or None when audio is flowing."""
+        if self.status.get() != "connected":
+            return "Connect your Omi to talk (its mic does the listening)"
+        self._route_mic()
+        if not self.radio.mic_on:
+            return f"The Omi's mic isn't on yet (codec {self.radio.codec}) · give it a second and tap again"
+        if self.stream_rate is not None and self.stream_rate < 5:
+            return "The Omi isn't sending audio · reconnect it in the Bluetooth app"
+        return None
 
     def ear_state(self) -> tuple[float | None, str, float]:
         """For the mic HUD: level 0..1 (None with the mic off), the last words heard, and their age in seconds."""
@@ -1027,6 +1042,7 @@ class Hub:
                 self.bluetooth.add_log(str(rest[0]) + (f" — {self.radio.last_error}" if "not reachable" in str(rest[0]) else ""))
             if rest[0] == "connected":
                 self._remember_address()
+                self._route_mic()  # the Arcade may have opened before the pendant was there
         elif kind == "scan_result":
             if self.bluetooth is not None:
                 self.bluetooth.scan_result(rest[0], str(rest[1]))  # type: ignore[arg-type]
@@ -1034,6 +1050,7 @@ class Hub:
             self.device.set(str(rest[0]))
         elif kind == "codec":
             self.codec.set(f"codec {rest[0]}")
+            self._route_mic()  # the mic can only decode once the codec is known
         elif kind == "voice_cmd":
             if self.game is not None and self.voice_on:
                 if rest[0] in ("exit", "quit"):

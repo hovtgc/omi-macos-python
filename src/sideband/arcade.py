@@ -1,6 +1,6 @@
 """Omi Arcade: a neon game menu you talk to, and the mini game windows.
 
-The menu has one control. Tap the pendant (or click anywhere) and say what you want: "play sky ace",
+The menu has one control. Tap the pendant (or click the mic bar) and say what you want: "play sky ace",
 "the corn one", "play this", "recalibrate". The pendant mic streams to an offline open-vocabulary
 listener and the local LLM decides what the words mean (keywords stand in without it). "This" is the
 highlighted game: the one the mouse is over, the one you named, or the one you just played.
@@ -141,7 +141,7 @@ WIZARD = (
 
 
 class ArcadeWindow:
-    """The menu is voice first: tap the pendant (or click anywhere) and say what you want."""
+    """The menu is voice first: tap the pendant (or click the mic bar) and say what you want. Click a game to just play it."""
 
     def __init__(self, hub: Hub) -> None:
         self.hub = hub
@@ -165,7 +165,7 @@ class ArcadeWindow:
         self.glow = list(self._box(self.selected))  # the highlight frame, eased toward the chosen game
         self._background()
         self.top.bind("<KeyPress>", self._key)
-        self.canvas.bind("<Button-1>", lambda _e: self.on_tap("single"))
+        self.canvas.bind("<Button-1>", self._click)
         self.canvas.bind("<Motion>", self._hover)
         # The tilt games need to know which way is right and forward: the full wizard, once ever.
         self.step: int | None = None
@@ -220,8 +220,9 @@ class ArcadeWindow:
         pass
 
     def listen(self) -> None:
-        if self.hub.status.get() != "connected":
-            self._toast("Connect your Omi to talk (its mic does the listening)")
+        problem = self.hub.mic_problem()
+        if problem:
+            self._toast(problem)
             return
         self.mode, self.heard = "listening", ""
         self.listen_started = time.monotonic()
@@ -268,6 +269,23 @@ class ArcadeWindow:
         self.mode, self.heard = "idle", ""
         if message:
             self._toast(message)
+
+    def _click(self, event: tk.Event) -> None:
+        """The mouse works as a mouse: click a game to play it, click the mic bar to talk."""
+        if self.step is not None:
+            self.on_tap("single")  # calibrating: a click locks the step, like a tap
+            return
+        if event.y >= AH - 100:
+            self.on_tap("single")
+            return
+        for i, game in enumerate(GAMES):
+            x0, y0, x1, y1 = self._box(i)
+            if x0 <= event.x <= x1 and y0 <= event.y <= y1 and self.mode != "thinking":
+                self._select(i)
+                self._idle("")
+                self._sfx("play")
+                self.hub.open_game(game[0])
+                return
 
     def _hover(self, event: tk.Event) -> None:
         """The mouse points at a game, so "play this" means that one."""
@@ -416,13 +434,21 @@ class ArcadeWindow:
         c.create_oval(mx - 26, cy - 26, mx + 26, cy + 26, fill="#ff4d6d" if live else "#3a1a6a", outline="", tags="dyn")
         draw_mic(c, mx, cy, "#ffffff", 1.2)
         if level is not None:
-            draw_meter(c, AW - 40 - 30 - 58, cy, self.level, 34)
+            draw_meter(c, AW - 40 - 30 - 58, cy - 6, self.level, 30)
+            c.create_text(AW - 70 - 29, cy + 22, text=f"{self.hub.radio.level_db:.0f} dB", fill="#7a6a9a", font=("Helvetica", 10, "bold"), tags="dyn")
         else:
             c.create_text(AW - 70, cy, anchor="e", text="mic off", fill="#ff6b6b", font=("Helvetica", 13, "bold"), tags="dyn")
         x = 150
         if self.mode == "listening":
             c.create_text(x, cy - 18, anchor="w", text="LISTENING…  say what you want to play", fill="#ff8fa3", font=("Helvetica", 14, "bold"), tags="dyn")
-            words = f"“{self.heard}”" if self.heard else ("…speak up, it's quiet" if now - self.listen_started > 2.0 and self.level < 0.1 else "…")
+            if self.heard:
+                words = f"“{self.heard}”"
+            elif now - self.listen_started > 2.0 and (problem := self.hub.mic_problem()):
+                words = problem
+            elif now - self.listen_started > 2.0 and self.level < 0.1:
+                words = "…speak up, it's quiet"
+            else:
+                words = "…"
             c.create_text(x, cy + 13, anchor="w", text=words, fill="#ffffff", font=("Helvetica", 24, "bold"), width=AW - 380, tags="dyn")
         elif self.mode == "thinking":
             dots = "." * (1 + int(self.clock * 4) % 3)
@@ -432,7 +458,7 @@ class ArcadeWindow:
             c.create_text(x, cy - 16, anchor="w", text="HEARD (tap first to ask for something)", fill="#9c8cff", font=("Helvetica", 12, "bold"), tags="dyn")
             c.create_text(x, cy + 12, anchor="w", text=f"“{caption}”", fill="#cfc4ff", font=("Helvetica", 18, "bold"), width=AW - 380, tags="dyn")
         else:
-            chip(c, x, cy - 14, "tap", "TALK   (or click anywhere)", size=17)
+            chip(c, x, cy - 14, "tap", "TALK   (or click here)", size=17)
             c.create_text(x, cy + 20, anchor="w", fill="#cfc4ff", font=("Helvetica", 14, "bold"), tags="dyn",
                           text="then say  “play sky ace”  ·  “the corn one”  ·  “play this”  ·  “recalibrate”")
 
