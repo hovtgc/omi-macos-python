@@ -13,6 +13,7 @@ import time
 import tkinter as tk
 from typing import TYPE_CHECKING, Callable
 
+from sideband.legend import draw_legend, legend
 from sideband.meshes import ENEMY, SPITFIRE, Mesh, Vec, apply, bomber, dot, face_normal, fighter, propeller, rotation, unit
 from sideband.minigames import Stick
 from sideband.skyfighter import Dogfight
@@ -68,27 +69,27 @@ class FighterWindow:
 
     def new_game(self) -> None:
         self.game = Dogfight(seed=self.rng.randrange(1 << 30))
-        self.state, self.recorded = "ready", False
+        self.state, self.recorded, self.over_at = "ready", False, 0.0
         self.hub.recentre()
 
     # --- the Omi's buttons: same flow in every Arcade game -----------------------------------
 
     def on_tap(self, kind: str) -> None:
-        double = kind == "double"
+        """In the air: tap fires, double tap fires long. Otherwise one tap goes forward, double tap back."""
+        forward = kind == "single"
         if self.state == "playing":
-            self.game.trigger(long=double)
-        elif self.state == "ready" and double:
-            self.state = "playing"
-            self.game.trigger()
-        elif self.state in ("paused", "over"):
-            if double:
-                if self.state == "over":
-                    self.new_game()
-                self.state = "playing"
-            else:
-                self.close()  # back to the Arcade
-        elif self.state == "ready":
-            self.close()
+            self.game.trigger(long=not forward)
+            return
+        if not forward:
+            self.close()  # back to the Arcade
+            return
+        if self.state == "over":
+            if time.monotonic() - self.over_at < 0.8:
+                return  # a late trigger tap should not restart at once
+            self.new_game()
+        self.hub.recentre()  # take off or resume from however you're holding it now
+        self.state = "playing"
+        self.game.started = True
 
     def on_shake(self) -> None:
         if self.state == "playing":
@@ -101,12 +102,10 @@ class FighterWindow:
     def _key_down(self, event: tk.Event) -> None:
         key = event.keysym.lower()
         self.keys.add(key)
-        if key == "space":
-            self.on_tap("double" if self.state != "playing" else "single")
-        elif key == "return":
-            self.on_tap("double")
+        if key in ("space", "return"):
+            self.on_tap("single")
         elif key == "escape":
-            self.on_tap("single") if self.state != "playing" else self.on_hold()
+            self.on_tap("double") if self.state != "playing" else self.on_hold()
         elif key == "b":
             self.on_shake()
         elif key == "c":
@@ -133,6 +132,7 @@ class FighterWindow:
             g.step(dt, Stick(x, y))
             if g.over:
                 self.state = "over"
+                self.over_at = time.monotonic()
         if g.over and not self.recorded:
             self.recorded = True
             self.hub.record_score("fighter", float(g.score))
@@ -280,22 +280,24 @@ class FighterWindow:
         c.create_rectangle(W - 250, 14, W - 250 + bar, 30, fill=colour, outline="", tags="dyn")
         roll = "ROLL READY · shake" if not g.roll_ready and not g.roll else ("ROLLING!" if g.roll else f"roll in {g.roll_ready:.1f}s")
         c.create_text(W - 260, 22, anchor="e", text=roll, fill="#ffe27a", font=("Helvetica", 13, "bold"), tags="dyn")
-        c.create_text(W / 2, H - 16, text=f"steer: {self.source}  ·  tilt: bank & climb/dive  ·  ● tap: fire  ·  ●● burst  ·  shake: barrel roll  ·  hold: pause",
-                      fill="#e8f0ff", font=("Helvetica", 12, "bold"), tags="dyn")
+        c.create_rectangle(0, H - 36, W, H, fill="#0b1633", outline="", stipple="gray50", tags="dyn")
+        draw_legend(c, W / 2, H - 18, legend("fighter", motion=self.source != "keys"), size=12, max_width=W - 24)
         if self.state == "ready":
-            self._banner("SKY ACE 1943", "●● double tap to take off    ·    ● tap: back to the Arcade", "#ffcf3d")
+            self._banner("SKY ACE 1943", "shoot down the bombers · watch your six", legend("fighter", "ready"), "#ffcf3d")
         elif self.state == "paused":
-            self._banner("PAUSED", "●● double tap: fly on    ·    ● tap: back to the Arcade", "#7fd4ff")
+            self._banner("PAUSED", "", legend("fighter", "paused"), "#7fd4ff")
         elif self.state == "over":
             best = int(self.hub.best("fighter") or 0)
-            self._banner("SHOT DOWN", f"score {g.score:,} · {g.kills} kills · best {best:,}\n●● double tap: fly again    ·    ● tap: back to the Arcade", "#ff6b5b")
+            self._banner("SHOT DOWN", f"score {g.score:,} · {g.kills} kills · best {best:,}", legend("fighter", "over"), "#ff6b5b")
 
-    def _banner(self, title: str, text: str, colour: str) -> None:
+    def _banner(self, title: str, text: str, items: tuple[tuple[str, str], ...], colour: str) -> None:
         c = self.canvas
         c.create_rectangle(W / 2 - 330, H / 2 - 110, W / 2 + 330, H / 2 + 90, fill="#0b1633", outline=colour, width=4, stipple="gray75", tags="dyn")
         c.create_text(W / 2 + 3, H / 2 - 52, text=title, fill="#000000", font=("Helvetica", 46, "bold italic"), tags="dyn")
         c.create_text(W / 2, H / 2 - 55, text=title, fill=colour, font=("Helvetica", 46, "bold italic"), tags="dyn")
-        c.create_text(W / 2, H / 2 + 26, text=text, fill="white", font=("Helvetica", 16, "bold"), justify="center", tags="dyn")
+        if text:
+            c.create_text(W / 2, H / 2 + 2, text=text, fill="white", font=("Helvetica", 16, "bold"), justify="center", tags="dyn")
+        draw_legend(c, W / 2, H / 2 + 50, items, size=18)
 
     def close(self) -> None:
         self.top.after_cancel(self._job)

@@ -37,6 +37,19 @@ class Motion:
         return self.ax, self.ay, self.az
 
 
+def steady(samples: list[Motion]) -> Motion | None:
+    """The median of each axis: how the pendant is held, ignoring the jolt of a button press."""
+    if not samples:
+        return None
+
+    def median(values: list[float]) -> float:
+        values = sorted(values)
+        mid = len(values) // 2
+        return values[mid] if len(values) % 2 else (values[mid - 1] + values[mid]) / 2
+
+    return Motion(*(median([getattr(s, axis) for s in samples]) for axis in ("ax", "ay", "az", "gx", "gy", "gz")))
+
+
 def parse_motion(raw: bytes) -> Motion | None:
     if len(raw) == 48:
         parts = struct.unpack("<12i", raw)
@@ -110,6 +123,12 @@ class Tilt2D:
             self.calibrate(sample)
         now = _unit(sample.accel)
         return _angle(_dot(now, self.u)), _angle(_dot(now, self.v))
+
+    def degrees_from_rest(self, sample: Motion) -> float | None:
+        """How far the pendant is tipped, in any direction, from the calibrated rest."""
+        if self.rest is None:
+            return None
+        return math.degrees(math.acos(max(-1.0, min(1.0, _dot(_unit(sample.accel), self.rest)))))
 
     def update(self, sample: Motion) -> tuple[float, float]:
         a, b = self.raw(sample)
