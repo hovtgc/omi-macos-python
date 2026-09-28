@@ -50,11 +50,12 @@ class CommandSpotter:
 MENU_WORDS = [
     "open", "play", "show", "start", "stop", "close", "cancel", "home", "launcher", "the",
     "recording", "record", "transcriber", "controls", "arcade", "bluetooth",
-    "voice", "flap", "marble", "maze", "star", "dodger", "catch",
+    "voice", "flap", "marble", "maze", "corn", "star", "dodger", "catch", "fighter", "ace", "plane", "sky",
     "summarize", "summarise", "summary", "that", "last", "latest", "[unk]",
 ]
 APPS = {"transcriber": "transcriber", "controls": "controls", "arcade": "arcade", "bluetooth": "bluetooth"}
-GAMES = {"marble": "marble", "maze": "marble", "star": "dodger", "dodger": "dodger", "catch": "catch", "flap": "flap"}
+GAMES = {"marble": "corn", "maze": "corn", "corn": "corn", "star": "dodger", "dodger": "dodger", "catch": "catch", "flap": "flap",
+         "fighter": "fighter", "ace": "fighter", "plane": "fighter", "sky": "fighter"}
 
 
 def menu_command(text: str) -> str | None:

@@ -6,13 +6,13 @@ Sideband is a Python Mac app that turns an Omi pendant into a Mac companion:
 
 | | App | What it does |
 |---|---|---|
-| 🎙 | **Transcriber** | Tap to record (or pick any audio file). Whisper transcribes it on the Mac; a local LLM adds a summary and action items and answers questions about one recording or all of them. Audio deletes itself after 24 hours; transcripts stay. |
+| 🎙 | **Transcriber** | Tap to record (or pick any audio file). Whisper transcribes it on the Mac; a local LLM speaks a short callout, writes a summary and action items, and answers questions about one recording or all of them. Audio deletes itself after 24 hours; transcripts stay. |
 | 🎛 | **Controls** | Map single / double / triple / hold taps to Mac actions: open apps, keystrokes, Shortcuts, URLs, volume, record, voice menu, AppleScript, shell. |
 | 🗣 | **Voice menu** | Press ⌘L or tap, then say "start recording", "summarize that", "open arcade", "close". |
-| 🕹 | **Arcade** | Omi Flap 3D (tap to flap, tilt to steer), Voice Flap ("go left"), Marble Maze, Star Dodger, Omi Catch. |
+| 🕹 | **Omi Arcade** | Played entirely with the pendant: it calibrates motion on open, tilt moves the pointer, double tap plays, tap goes back. **Sky Ace 1943** (a 3D WWII dogfight), Omi Flap 3D, **Corn Maze**, Star Dodger, Omi Catch, Voice Flap. |
 | 📶 | **Bluetooth** | Connect, scan, switch pendants, and see what the link is doing. |
 
-It runs Whisper large-v3-turbo, Qwen2.5-7B (MLX) and Vosk locally. There is no account, no cloud, and no telemetry. MIT licensed. Not affiliated with Based Hardware; this is not the Omi phone app.
+It runs Whisper large-v3-turbo, Qwen2.5-7B (MLX), Vosk and macOS speech locally. There is no account, no cloud, and no telemetry. MIT licensed. Not affiliated with Based Hardware; this is not the Omi phone app.
 
 ## Quick start: let your agent do it
 

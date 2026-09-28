@@ -16,6 +16,8 @@ from typing import Callable
 
 MODEL = "mlx-community/Qwen2.5-7B-Instruct-4bit"
 SUMMARY_START, SUMMARY_END = "<!-- summary -->", "<!-- /summary -->"
+CALLOUT_START, CALLOUT_END = "<!-- callout -->", "<!-- /callout -->"
+CALLOUT_WORDS = 60
 CONTEXT_CHARS = 18_000  # about 4.5k tokens of transcripts per question keeps answers quick
 
 SYSTEM = (
@@ -58,6 +60,63 @@ def summary_messages(text: str) -> list[dict[str, str]]:
             ),
         },
     ]
+
+
+def callout_messages(text: str) -> list[dict[str, str]]:
+    """A summary written to be heard: spoken right after a recording, so it must work by ear alone."""
+    return [
+        {
+            "role": "system",
+            "content": (
+                "You write short spoken callouts of the owner's own voice recordings. They are read aloud by "
+                "a text-to-speech voice right after the recording ends, so write for the ear:\n"
+                "- One to three short sentences, at most 60 words.\n"
+                "- Start with the main point. Then the specifics that matter: names, numbers, dates, decisions.\n"
+                "- If the owner promised or planned to do something, end with it, like: You said you'd send Dana the notes by Friday.\n"
+                "- Talk to the owner as 'you'. Plain spoken words: no lists, bullet points, headings, symbols, emoji or quotes.\n"
+                "- Say numbers the way a person would: 18 dollars, the third of October, 400 units.\n"
+                "- Use only what was said. Never invent. Do not start with 'In this recording' or 'The speaker'.\n"
+                "- If nothing meaningful was said, reply exactly: Nothing much in that one."
+            ),
+        },
+        {"role": "user", "content": f"Recording:\n{text}"},
+    ]
+
+
+def clean_callout(text: str, max_words: int = CALLOUT_WORDS) -> str:
+    """Make a model reply safe to speak: no markdown or list marks, one paragraph, bounded length."""
+    import re
+
+    text = re.sub(r"[*_#`>\[\]|]", "", text)
+    text = re.sub(r"^\s*([-•]|\d+[.)])\s+", "", text, flags=re.MULTILINE)
+    text = " ".join(text.split())
+    words = text.split()
+    if len(words) > max_words:
+        cut = " ".join(words[:max_words])
+        end = max(cut.rfind(". "), cut.rfind("! "), cut.rfind("? "))
+        text = cut[: end + 1] if end > 0 else cut.rstrip(",;:") + "."
+    return text
+
+
+def with_callout(markdown: str, callout: str) -> str:
+    """Store the spoken callout as a quote under the heading lines, replacing an older one."""
+    block = f"{CALLOUT_START}\n> 🔊 {callout.strip()}\n{CALLOUT_END}\n"
+    if CALLOUT_START in markdown and CALLOUT_END in markdown:
+        head, rest = markdown.split(CALLOUT_START, 1)
+        tail = rest.split(CALLOUT_END, 1)[1].lstrip("\n")
+        return head + block + "\n" + tail
+    lines = markdown.splitlines(keepends=True)
+    cut = next(
+        (i for i, line in enumerate(lines) if line.startswith(("**[", "_Nothing", SUMMARY_START))),
+        len(lines),
+    )
+    return "".join(lines[:cut]) + block + "\n" + "".join(lines[cut:])
+
+
+def callout_of(markdown: str) -> str | None:
+    if CALLOUT_START not in markdown or CALLOUT_END not in markdown:
+        return None
+    return markdown.split(CALLOUT_START, 1)[1].split(CALLOUT_END, 1)[0].strip().removeprefix("> 🔊").strip()
 
 
 def ask_messages(question: str, text: str) -> list[dict[str, str]]:

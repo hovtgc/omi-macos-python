@@ -88,6 +88,8 @@ class TranscriberWindow:
         actions = ttk.Frame(right)
         actions.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(8, 0))
         for label, command in (
+            ("🔊 Speak", self._speak),
+            ("■", self.hub.speaker.stop),
             ("✨ Summarize", self._summarize),
             ("Copy text", self._copy),
             ("Open", self._open),
@@ -97,10 +99,17 @@ class TranscriberWindow:
             ttk.Button(actions, text=label, command=command).pack(side="left", padx=(0, 8))
         self.auto_open = tk.BooleanVar(value=False)
         self.auto_summary = tk.BooleanVar(value=bool(self.hub.settings.get("auto_summary", True)))
+        self.speak_new = tk.BooleanVar(value=bool(self.hub.settings.get("speak_callout", True)))
+        options = ttk.Frame(right)
+        options.grid(row=4, column=0, columnspan=2, sticky="w", pady=(6, 0))
         ttk.Checkbutton(
-            actions, text="Summarize new recordings", variable=self.auto_summary,
+            options, text="Speak a callout after each recording", variable=self.speak_new,
+            command=lambda: self.hub.set_setting("speak_callout", self.speak_new.get()),
+        ).pack(side="left")
+        ttk.Checkbutton(
+            options, text="Write a summary and action items", variable=self.auto_summary,
             command=lambda: self.hub.set_setting("auto_summary", self.auto_summary.get()),
-        ).pack(side="right")
+        ).pack(side="left", padx=12)
 
         ask = ttk.Frame(right)
         ask.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(12, 4))
@@ -198,6 +207,15 @@ class TranscriberWindow:
         if rec is None or rec.transcript is None:
             return
         self.show_summary_job(self.hub.summarize(rec.transcript))
+
+    def _speak(self) -> None:
+        rec = self._need("speak")
+        if rec is None or rec.transcript is None:
+            return
+        job_id = self.hub.speak_recording(rec.transcript)
+        if job_id is not None:
+            self.stream_job = job_id
+            self._set_answer("🔊 Writing a callout on this Mac…\n\n")
 
     def show_summary_job(self, job_id: int | None) -> None:
         if job_id is not None:
