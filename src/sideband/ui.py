@@ -39,7 +39,9 @@ from sideband.inputs import (
 )
 from sideband.motion import MOTION_UUID, Motion, ShakeDetector, ShakeGate, Tilt2D, parse_motion, steady
 from sideband.protocol import AUDIO_CODEC_UUID, AUDIO_DATA_UUID, BATTERY_LEVEL_UUID, codec_name, strip_packet
-from sideband.llm import Doc, Job, LocalLLM, ask_all_messages, ask_messages, clean_summary, pick_context, summary_messages, transcript_text, with_summary
+from sideband.buckets import Filed, all_folders, bucket_messages, is_new_folder, note_markdown, parse_bucket, read_bucket, with_bucket
+from sideband import maturity
+from sideband.llm import Backend, Doc, Job, LocalLLM, ask_all_messages, ask_messages, clean_summary, pick_context, summary_messages, transcript_text, with_summary
 from sideband.llm import arcade_messages, callout_messages, callout_of, clean_callout, guess_arcade, parse_arcade, with_callout
 from sideband.speech import Speaker
 from sideband.llm import title as transcript_title
@@ -52,14 +54,14 @@ STEADY_S = 1.0  # recentring uses the median of this much motion
 SWEEP_MS = 10 * 60 * 1000  # check the 24-hour audio limit this often
 GREY = "#8a8f98"
 APPS = (
-    ("transcriber", "🎙", "Transcriber", "Record from your Omi or pick an audio file. Transcribed on this Mac."),
+    ("transcriber", "🧠", "Thought Map", "Talk into your Omi; each thought is transcribed and filed into folders by the AI."),
     ("controls", "🎛", "Controls", "Map taps to Mac actions and watch every live input."),
     ("arcade", "🕹", "Arcade", "Sky Ace 1943, Omi Flap 3D, Corn Maze, Star Dodger, Omi Catch, Voice Flap. Played with the pendant."),
     ("bluetooth", "📶", "Bluetooth", "Connect, scan, switch pendants and debug the link."),
 )
 REQUEST_MS = 400  # how often the launcher checks for `sideband open <app>` requests
 MENU_LISTEN_S = 5.0
-DEFAULT_SETTINGS = {"auto_summary": True, "speak_callout": True}
+DEFAULT_SETTINGS = {"auto_summary": True, "speak_callout": True, "auto_bucket": True, "auto_mature": True, "llm_kind": "mlx", "llm_model": "", "llm_base_url": ""}
 MENU_HINT = "say: open transcriber · start recording · summarize that · open arcade · play sky ace · close"
 
 
@@ -270,6 +272,10 @@ class Hub:
         self.windows: list[object] = []  # open app windows, most recent last, for "close"
         self.llm: LocalLLM | None = None
         self.job_ids = 0
+        self.bucket_queue: list[Path] = []  # filed one at a time so each sees the folders the last one made
+        self.bucket_busy: Path | None = None
+        self.maturing: set[tuple[str, ...]] = set()  # folders the AI is reading now
+        self.bucket_moved: set[Path] = set()  # moved by hand while the AI was filing it: keep the owner's choice
         self.settings = self._load_settings()
         self.speaker = Speaker()
         self.last_audio = (0, time.monotonic())
@@ -299,7 +305,7 @@ class Hub:
         self.codec = tk.StringVar(value="")
         self.battery = tk.StringVar(value="battery —")
         self.rec_badge = tk.StringVar(value="")
-        self.llm_status = tk.StringVar(value="assistant: local, loads on first use")
+        self.llm_status = tk.StringVar(value=f"assistant: {self.backend().describe()}, starts on first use")
         ttk.Label(top, text="Sideband", font=("Helvetica", 24, "bold")).pack(side="left")
         ttk.Label(top, text="for Omi", foreground=GREY, font=("Helvetica", 14)).pack(side="left", padx=(6, 0), pady=(8, 0))
         for var in (self.battery, self.status):
@@ -460,9 +466,33 @@ class Hub:
         self._settings_path.parent.mkdir(parents=True, exist_ok=True)
         self._settings_path.write_text(json.dumps(self.settings, indent=2) + "\n", encoding="utf-8")
 
+    def backend(self) -> Backend:
+        kind = str(self.settings.get("llm_kind") or "mlx")
+        model = str(self.settings.get("llm_model") or "")
+        if kind == "api":
+            return Backend("api", model, str(self.settings.get("llm_base_url") or ""), self.app.api_key())
+        return Backend("mlx", model or Backend().model)
+
+    def set_backend(self, kind: str, model: str, base_url: str, api_key: str | None) -> None:
+        """Switch the assistant. `api_key` None leaves the stored key alone."""
+        if api_key is not None:
+            self.app.set_api_key(api_key)
+        for key, value in (("llm_kind", kind), ("llm_model", model), ("llm_base_url", base_url)):
+            self.settings[key] = value
+        self.set_setting("llm_kind", kind)
+        if self.llm is not None:  # the next job starts the new backend
+            self.llm.close()
+            self.llm = None
+        self.llm_status.set(f"assistant: {self.backend().describe()}")
+        self.log(f"assistant: now {self.backend().describe()}")
+
+    def test_backend(self) -> int:
+        self.llm_status.set(f"assistant: testing {self.backend().describe()}…")
+        return self._job([{"role": "user", "content": "Reply with exactly: Ready to map your thoughts."}], "llm_answer", max_tokens=20)
+
     def _assistant(self) -> LocalLLM:
         if self.llm is None:
-            self.llm = LocalLLM(lambda text: self.post("llm_status", text))
+            self.llm = LocalLLM(lambda text: self.post("llm_status", text), self.backend())
             self.llm.start()
         return self.llm
 
@@ -488,16 +518,18 @@ class Hub:
         self.log(f"{transcript.stem}: summarizing on this Mac")
         return self._job(summary_messages(text), "llm_summary", transcript)
 
-    def ask(self, question: str, transcript: Path | None) -> int:
-        """Ask about one transcript, or (None) about the recent ones, newest first."""
+    def ask(self, question: str, transcript: Path | None, among: list[Path] | None = None) -> int:
+        """Ask about one transcript, or (None) about several, newest first: `among`, else all of them."""
         if transcript is not None:
             messages = ask_messages(question, transcript_text(transcript.read_text(encoding="utf-8")))
         else:
             docs = []
-            for rec in list_recordings(self.app.recordings_dir):
-                if rec.transcript is not None:
-                    markdown = rec.transcript.read_text(encoding="utf-8")
-                    docs.append(Doc(transcript_title(markdown), transcript_text(markdown)))
+            paths = among if among is not None else [r.transcript for r in list_recordings(self.app.recordings_dir) if r.transcript]
+            for path in paths:
+                markdown = path.read_text(encoding="utf-8")
+                filed = read_bucket(path)
+                name = f"{filed.title} ({transcript_title(markdown)})" if filed and filed.title else transcript_title(markdown)
+                docs.append(Doc(name, transcript_text(markdown)))
             messages = ask_all_messages(question, pick_context(docs))
         self.llm_status.set("assistant: thinking…")
         return self._job(messages, "llm_answer", max_tokens=500)
@@ -530,6 +562,155 @@ class Hub:
                 self.speaker.speak(spoken)
         if self.transcriber_win is not None:
             self.transcriber_win.job_done(job_id, spoken, error, transcript)
+
+    # --- thought map: filing each thought into a folder -------------------------------------
+
+    def known_folders(self) -> list[tuple[str, ...]]:
+        found = [f.folder for r in list_recordings(self.app.recordings_dir) if (f := read_bucket(r.transcript))]
+        return all_folders(found)
+
+    def bucket(self, transcript: Path) -> None:
+        """Queue a thought to be filed. Runs one at a time so each sees the folders made before it."""
+        if transcript not in self.bucket_queue and transcript != self.bucket_busy:
+            self.bucket_queue.append(transcript)
+        self._next_bucket()
+
+    def bucket_unsorted(self) -> int:
+        todo = [r.transcript for r in list_recordings(self.app.recordings_dir) if r.transcript and read_bucket(r.transcript) is None]
+        for path in reversed(todo):  # oldest first, so the map grows the way the thoughts came
+            self.bucket(path)
+        return len(todo)
+
+    def bucket_state(self, transcript: Path) -> str:
+        if transcript == self.bucket_busy:
+            return "filing…"
+        return "waiting to file" if transcript in self.bucket_queue else ""
+
+    def _next_bucket(self) -> None:
+        while self.bucket_busy is None and self.bucket_queue:
+            path = self.bucket_queue.pop(0)
+            if not path.exists():
+                continue
+            text = transcript_text(path.read_text(encoding="utf-8"))
+            if not text:
+                continue
+            self.bucket_busy = path
+            self.llm_status.set("assistant: filing a thought…")
+            self._job(bucket_messages(text, self.known_folders()), "llm_bucket", path, max_tokens=60)
+        if self.transcriber_win is not None:
+            self.transcriber_win.refresh()
+
+    def _on_bucket(self, job_id: int, text: str, error: str, transcript: Path) -> None:
+        self.bucket_busy = None
+        self.llm_status.set("assistant: ready")
+        known = self.known_folders()
+        filed = parse_bucket(text, known) if not error else None
+        if transcript in self.bucket_moved:
+            self.bucket_moved.discard(transcript)
+        elif filed is None:
+            self.log(f"{transcript.stem}: could not file it: {error or repr(text[:80])}")
+        elif transcript.exists():
+            fresh = is_new_folder(filed.folder, known)
+            transcript.write_text(with_bucket(transcript.read_text(encoding="utf-8"), filed), encoding="utf-8")
+            self.log(f"{transcript.stem}: 📁 {' › '.join(filed.folder)}" + (" (new folder)" if fresh else ""))
+            if self.transcriber_win is not None:
+                self.transcriber_win.filed(transcript, filed, fresh)
+            if self.settings.get("auto_mature"):
+                self.maybe_mature(filed.folder)
+        self._next_bucket()
+
+    # --- maturing ideas: from thought to action ----------------------------------------------
+
+    def folder_thoughts(self, folder: tuple[str, ...]) -> list[Path]:
+        """Transcripts in a folder and the folders below it, oldest first."""
+        out = []
+        for rec in reversed(list_recordings(self.app.recordings_dir)):
+            filed = read_bucket(rec.transcript)
+            if rec.transcript is not None and filed is not None and filed.folder[: len(folder)] == folder:
+                out.append(rec.transcript)
+        return out
+
+    def maturities(self) -> dict[str, maturity.Maturity]:
+        return maturity.load(self.app.recordings_dir)
+
+    def maybe_mature(self, folder: tuple[str, ...]) -> None:
+        count = len(self.folder_thoughts(folder))
+        if maturity.needs_maturing(self.maturities().get(maturity.key(folder)), count):
+            self.mature(folder)
+
+    def mature(self, folder: tuple[str, ...]) -> int | None:
+        """Ask the AI how far the idea in this folder has come and the next step to act on it."""
+        if folder in self.maturing:
+            return None
+        paths = self.folder_thoughts(folder)
+        thoughts = []
+        for path in paths:
+            markdown = path.read_text(encoding="utf-8")
+            filed = read_bucket(path)
+            when = transcript_title(markdown).split(", ", 1)[-1]
+            thoughts.append((f"{filed.title} ({when})" if filed and filed.title else when, transcript_text(markdown)))
+        if not thoughts:
+            return None
+        self.maturing.add(folder)
+        self.llm_status.set(f"assistant: maturing {' › '.join(folder)}…")
+        docs = pick_context([Doc(w, t) for w, t in reversed(thoughts)])  # newest kept when the folder is long
+        return self._job(maturity.mature_messages(folder, [(d.name, d.text) for d in reversed(docs)]),
+                         "llm_mature", folder, len(paths), max_tokens=300)
+
+    def _on_mature(self, job_id: int, text: str, error: str, folder: tuple[str, ...], count: int) -> None:
+        self.maturing.discard(folder)
+        self.llm_status.set("assistant: ready")
+        entry = maturity.parse_maturity(text, count, time.time()) if not error else None
+        if entry is None:
+            self.log(f"maturing {' › '.join(folder)} failed: {error or repr(text[:80])}")
+        else:
+            entries = self.maturities()
+            entries[maturity.key(folder)] = entry
+            maturity.save(self.app.recordings_dir, entries)
+            self.log(f"{entry.badge} {' › '.join(folder)}: next, {entry.next_action}")
+            if entry.stage == "ready":
+                note = entry.next_action.replace('"', "'")
+                subprocess.Popen(["osascript", "-e", f'display notification "{note}" with title "🌳 Ready for action: {folder[-1]}"'])
+        if self.transcriber_win is not None:
+            self.transcriber_win.matured(job_id, folder, entry, error)
+
+    def to_action(self, folder: tuple[str, ...], action: str | None = None) -> str:
+        """Turn the folder's suggested next step into a reminder. Returns '' or the error."""
+        entries = self.maturities()
+        entry = entries.get(maturity.key(folder))
+        if entry is None:
+            return "mature this folder first"
+        action = (action or entry.next_action).strip()
+        stands = maturity.field(entry.text, "where it stands")
+        error = self.app.add_reminder(action, f"From your Omi thought map: {' › '.join(folder)}\n{stands}")
+        if not error:
+            entries[maturity.key(folder)] = maturity.acted(entry, action)
+            maturity.save(self.app.recordings_dir, entries)
+            self.log(f"✅ {' › '.join(folder)}: added to Reminders: {action}")
+        return error
+
+    def move_thought(self, transcript: Path, folder: tuple[str, ...], title: str) -> None:
+        """Refile by hand. The owner's choice is kept until they ask the AI to file it again."""
+        if transcript in self.bucket_queue:
+            self.bucket_queue.remove(transcript)
+        if transcript == self.bucket_busy:
+            self.bucket_moved.add(transcript)
+        transcript.write_text(with_bucket(transcript.read_text(encoding="utf-8"), Filed(folder, title)), encoding="utf-8")
+        self.log(f"{transcript.stem}: moved to 📁 {' › '.join(folder)}")
+
+    def add_thought(self, text: str) -> Path | None:
+        """A typed thought: saved like a transcript, then filed like any other."""
+        if not text.strip():
+            return None
+        folder = self.app.recordings_dir
+        folder.mkdir(parents=True, exist_ok=True)
+        now = time.time()
+        path = new_path(folder, now).with_suffix(".md")
+        path.write_text(note_markdown(now, text), encoding="utf-8")
+        self.log(f"{path.stem}: typed thought saved")
+        if self.settings.get("auto_bucket"):
+            self.bucket(path)
+        return path
 
     def latest_transcript(self) -> Path | None:
         return next((rec.transcript for rec in list_recordings(self.app.recordings_dir) if rec.transcript), None)
@@ -687,6 +868,8 @@ class Hub:
             subprocess.Popen(["osascript", "-e", f'display notification "{message}" with title "Omi transcript ready"'])
             if self.settings.get("speak_callout"):
                 self.callout(transcript)  # first: short, so it is spoken within seconds
+            if self.settings.get("auto_bucket"):
+                self.bucket(transcript)  # next: the thought lands on the map quickly
             if self.settings.get("auto_summary"):
                 self.summarize(transcript)
         if self.transcriber_win is not None:
@@ -1072,6 +1255,10 @@ class Hub:
                 self.transcriber_win.token(int(rest[0]), str(rest[1]))  # type: ignore[arg-type]
         elif kind == "llm_summary":
             self._on_summary(int(rest[0]), str(rest[1]), str(rest[2]), rest[3])  # type: ignore[arg-type]
+        elif kind == "llm_bucket":
+            self._on_bucket(int(rest[0]), str(rest[1]), str(rest[2]), rest[3])  # type: ignore[arg-type]
+        elif kind == "llm_mature":
+            self._on_mature(int(rest[0]), str(rest[1]), str(rest[2]), rest[3], int(rest[4]))  # type: ignore[arg-type]
         elif kind == "llm_callout":
             self._on_callout(int(rest[0]), str(rest[1]), str(rest[2]), rest[3], bool(rest[4]))  # type: ignore[arg-type]
         elif kind == "llm_answer":

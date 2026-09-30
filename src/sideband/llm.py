@@ -1,20 +1,88 @@
-"""A local LLM over your transcripts: summaries with action items, and questions. Nothing leaves the Mac.
+"""The assistant over your thoughts: filing, summaries with action items, and questions.
 
-MLX on Apple silicon (the `llm` extra) runs a small instruct model fetched once from Hugging Face and
-cached. Prompt building, context selection and writing the summary into the transcript file are pure
-and tested; `LocalLLM` is one worker thread that streams tokens back.
+Two backends, picked in the Thought Map's AI settings:
+- `mlx`: a model on this Mac with MLX on Apple silicon (the `llm` extra), fetched once from Hugging Face.
+  Nothing leaves the Mac. Any mlx-community instruct model works; Qwen2.5-7B is only the default.
+- `api`: any OpenAI-compatible chat server. Ollama, LM Studio and llama.cpp run locally; a hosted API
+  (OpenRouter, Groq, OpenAI…) needs a key and sends the transcript text there. Off unless chosen.
+
+Prompt building, context selection, the API request and stream parsing are pure and tested; `LocalLLM`
+is one worker thread that streams tokens back.
 """
 
 from __future__ import annotations
 
+import json
 import os
 import queue
 import threading
 import time
+import urllib.request
 from dataclasses import dataclass
-from typing import Callable
+from typing import Callable, Iterable, Iterator
 
 MODEL = "mlx-community/Qwen2.5-7B-Instruct-4bit"
+API_TIMEOUT_S = 120
+
+
+@dataclass(frozen=True)
+class Backend:
+    kind: str = "mlx"  # "mlx" or "api"
+    model: str = MODEL
+    base_url: str = ""  # api only, e.g. http://localhost:11434/v1
+    api_key: str = ""  # api only; empty for local servers
+
+    @property
+    def local(self) -> bool:
+        host = self.base_url.split("://", 1)[-1].split("/", 1)[0].split(":", 1)[0]
+        return self.kind == "mlx" or host in ("localhost", "127.0.0.1", "::1", "[::1]") or host.endswith(".local")
+
+    def describe(self) -> str:
+        if self.kind == "mlx":
+            return f"{self.model.split('/')[-1]} on this Mac"
+        where = "this Mac" if self.local else self.base_url.split("://", 1)[-1].split("/", 1)[0]
+        return f"{self.model} via {where}"
+
+
+# Presets for the settings window: (label, kind, model, base_url).
+PRESETS = (
+    ("On this Mac (MLX)", "mlx", MODEL, ""),
+    ("Ollama", "api", "llama3.2", "http://localhost:11434/v1"),
+    ("LM Studio", "api", "local-model", "http://localhost:1234/v1"),
+    ("OpenRouter (key)", "api", "meta-llama/llama-3.3-70b-instruct", "https://openrouter.ai/api/v1"),
+    ("OpenAI (key)", "api", "gpt-4o-mini", "https://api.openai.com/v1"),
+)
+
+
+def api_request(backend: Backend, messages: list[dict[str, str]], max_tokens: int) -> urllib.request.Request:
+    """A streaming chat-completions request for any OpenAI-compatible server."""
+    body = {"model": backend.model, "messages": messages, "max_tokens": max_tokens, "temperature": 0.2, "stream": True}
+    headers = {"Content-Type": "application/json", "Accept": "text/event-stream"}
+    if backend.api_key:
+        headers["Authorization"] = f"Bearer {backend.api_key}"
+    url = backend.base_url.rstrip("/") + "/chat/completions"
+    return urllib.request.Request(url, data=json.dumps(body).encode(), headers=headers, method="POST")
+
+
+def sse_tokens(lines: Iterable[bytes]) -> Iterator[str]:
+    """Text pieces from a server-sent-events chat stream. Ignores keep-alives and non-text chunks."""
+    for raw in lines:
+        line = raw.decode("utf-8", "replace").strip()
+        if not line.startswith("data:"):
+            continue
+        data = line[5:].strip()
+        if data == "[DONE]":
+            return
+        try:
+            chunk = json.loads(data)
+        except ValueError:
+            continue
+        if chunk.get("error"):
+            raise RuntimeError(str(chunk["error"].get("message", chunk["error"]) if isinstance(chunk["error"], dict) else chunk["error"]))
+        for choice in chunk.get("choices") or []:
+            piece = (choice.get("delta") or {}).get("content") or ""
+            if piece:
+                yield piece
 SUMMARY_START, SUMMARY_END = "<!-- summary -->", "<!-- /summary -->"
 CALLOUT_START, CALLOUT_END = "<!-- callout -->", "<!-- /callout -->"
 CALLOUT_WORDS = 60
@@ -256,9 +324,10 @@ class Job:
 class LocalLLM(threading.Thread):
     """One model, loaded on first use. Jobs run in order; tokens stream through the job's callbacks."""
 
-    def __init__(self, on_status: Callable[[str], None], model: str = MODEL) -> None:
+    def __init__(self, on_status: Callable[[str], None], backend: Backend | None = None) -> None:
         super().__init__(daemon=True)
-        self.model_name = model
+        self.backend = backend or Backend()
+        self.model_name = self.backend.model
         self.on_status = on_status
         self.jobs: queue.Queue[Job | None] = queue.Queue()
         self.busy = False
@@ -271,6 +340,36 @@ class LocalLLM(threading.Thread):
         self.jobs.put(None)
 
     def run(self) -> None:
+        if self.backend.kind == "api":
+            self._run_api()
+        else:
+            self._run_mlx()
+
+    def _run_api(self) -> None:
+        self.on_status(f"using {self.backend.describe()}")
+        while (job := self.jobs.get()) is not None:
+            self.busy = True
+            try:
+                text = ""
+                request = api_request(self.backend, job.messages, job.max_tokens)
+                with urllib.request.urlopen(request, timeout=API_TIMEOUT_S) as response:
+                    for piece in sse_tokens(response):
+                        text += piece
+                        job.on_token(piece)
+                self.ready = True
+                job.on_done(text.strip(), "")
+            except Exception as exc:
+                detail = ""
+                if hasattr(exc, "read"):
+                    try:
+                        detail = " " + exc.read().decode("utf-8", "replace")[:200]  # type: ignore[union-attr]
+                    except Exception:
+                        pass
+                job.on_done("", f"{type(exc).__name__}: {exc}{detail}")
+            finally:
+                self.busy = False
+
+    def _run_mlx(self) -> None:
         from sideband.transcribe import _cached
 
         if _cached(self.model_name):
@@ -279,7 +378,7 @@ class LocalLLM(threading.Thread):
             from mlx_lm import load, stream_generate
             from mlx_lm.sample_utils import make_sampler
         except ImportError:
-            error = "the assistant needs the llm extra: pip install -e '.[llm]'"
+            error = "the on-Mac model needs the llm extra (pip install -e '.[llm]'), or pick Ollama or an API in AI settings"
             self.on_status(error)
             while (job := self.jobs.get()) is not None:
                 job.on_done("", error)

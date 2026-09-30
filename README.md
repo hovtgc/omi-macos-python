@@ -6,13 +6,13 @@ Sideband is a Python Mac app that turns an Omi pendant into a Mac companion:
 
 | | App | What it does |
 |---|---|---|
-| 🎙 | **Transcriber** | Tap to record (or pick any audio file). Whisper transcribes it on the Mac; a local LLM speaks a short callout, writes a summary and action items, and answers questions about one recording or all of them. Audio deletes itself after 24 hours; transcripts stay. |
+| 🧠 | **Thought Map** | Tap to talk (or type, or pick any audio file). Whisper transcribes it on the Mac, then the AI files every thought into folders 2 to 3 levels deep (Work › Clients › Acme) and shows you each new folder. As a folder grows, it **matures the idea**: 🌱 seed → 🌿 growing → 🌳 ready, with one concrete next step you can send to Reminders. It also speaks a callout, writes summaries and action items, and answers questions about a thought, a folder or everything. Audio deletes itself after 24 hours; thoughts stay. |
 | 🎛 | **Controls** | Map single / double / triple / hold taps to Mac actions: open apps, keystrokes, Shortcuts, URLs, volume, record, voice menu, AppleScript, shell. |
 | 🗣 | **Voice menu** | Press ⌘L or tap, then say "start recording", "summarize that", "open arcade", "close". |
 | 🕹 | **Omi Arcade** | You talk to it: tap the pendant (or click the mic bar), say "play sky ace", "the corn one" or "play this", and the local LLM works out what you meant. The mic stays on in games, so "exit game", "pause" and "play again" work mid-game. In a game: tilt steers, tap goes forward, double tap goes back. A colour-coded legend on every screen says what each control does right now. **Sky Ace 1943** (a 3D WWII dogfight), Omi Flap 3D, **Corn Maze**, Star Dodger, Omi Catch, Voice Flap. |
 | 📶 | **Bluetooth** | Connect, scan, switch pendants, and see what the link is doing. |
 
-It runs Whisper large-v3-turbo, Qwen2.5-7B (MLX), Vosk and macOS speech locally. There is no account, no cloud, and no telemetry. MIT licensed. Not affiliated with Based Hardware; this is not the Omi phone app.
+It runs Whisper large-v3-turbo, Vosk and macOS speech locally. The assistant is your choice in **AI settings**: a model on the Mac with MLX (Qwen2.5-7B by default, any mlx-community model works), a local server like Ollama or LM Studio, or any OpenAI-compatible API with your own key (kept in the Keychain; only then does transcript text leave the Mac). There is no account, no cloud by default, and no telemetry. MIT licensed. Not affiliated with Based Hardware; this is not the Omi phone app.
 
 ## Quick start: let your agent do it
 

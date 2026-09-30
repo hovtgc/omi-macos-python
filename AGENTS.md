@@ -15,7 +15,7 @@ This stays a Python application. Do not rewrite it in Swift, JavaScript, or as a
 
 ## Product
 
-Transcriber first: tap to record, Whisper transcribes on the Mac, a local LLM (Qwen2.5-7B via MLX) writes summaries and action items and answers questions. Then Controls (taps → Mac actions), a voice menu, the Arcade, and a Bluetooth tool. It also holds the pendant's link in the background, which the official phone app drops when it leaves the foreground. Nothing is uploaded. There is no account.
+Thought Map first: tap to talk (or type), Whisper transcribes on the Mac, the assistant files each thought into folders 2 to 3 levels deep, matures growing folders into a next action, writes summaries and action items and answers questions. The assistant is MLX on the Mac by default, or any OpenAI-compatible server (`llm.Backend`). Then Controls (taps → Mac actions), a voice menu, the Arcade, and a Bluetooth tool. It also holds the pendant's link in the background, which the official phone app drops when it leaves the foreground. Nothing is uploaded. There is no account.
 
 USB does not carry audio. Do not add a USB transport.
 
@@ -29,7 +29,7 @@ USB does not carry audio. Do not add a USB transport.
 - Button gestures come from the firmware's codes (`inputs.BUTTON_CODES`). Do not re-derive them from timing. A 3 s hold powers the pendant off and cannot be mapped.
 - Arcade flow is the same in every game: single tap = forward (start, again, resume), double tap = back to the Arcade, hold = pause, and saying "exit game" leaves any game. Every screen shows its controls with `legend.py` (add a `PLAY` entry for a new game). Keep it that way for new games.
 - Tests must pass with no pendant and no Bluetooth adapter.
-- Keep models local: Whisper, the assistant LLM and Vosk run on the Mac. Do not add cloud transcription or cloud LLMs without the owner asking.
+- Keep models local by default: Whisper and Vosk always run on the Mac. The assistant runs on the Mac (MLX, or a local OpenAI-compatible server such as Ollama) unless the user picks a hosted OpenAI-compatible API in AI settings; that is opt-in, the key lives in the Keychain, and the window says text is sent there. Do not add cloud transcription.
 - Do not add Deepgram, Firebase, accounts, or network transcription. Nothing is recorded unless the user passes `--wav`. Voice commands use offline Vosk: a fixed grammar for Voice Flap and the launcher's voice menu, an open vocabulary in the Arcade whose words the local LLM reads (keywords as fallback). Audio is dropped after recognition.
 - Never flash firmware without the owner's explicit yes in chat. The bootloader has no rollback.
 
@@ -81,7 +81,9 @@ A connected pendant stops advertising. Close the window before `firmware` or `sc
 | `src/sideband/bundle.py` | Sideband.app and LaunchAgent builders. |
 | `src/sideband/radio.py` | bleak and SMP sessions. |
 | `src/sideband/ui.py` | Launcher (`Hub`): the pendant connection, gesture actions, recorder, transcriber, assistant, voice menu, 24 h audio limit. |
-| `src/sideband/transcriber_app.py` | Transcriber window: record, read, summarize, ask. |
+| `src/sideband/transcriber_app.py` | Thought Map window (the transcriber): folder tree, inbox, move / re-file, mature, ask, AI settings. |
+| `src/sideband/buckets.py` | Filing thoughts into folders: prompt, parsing, the bucket block in each transcript, the tree. Pure. |
+| `src/sideband/maturity.py` | Maturing a folder from thought to action: prompt, stages, `maturity.json`. Pure. |
 | `src/sideband/controls.py` | Controls window: live inputs and the gesture map. |
 | `src/sideband/arcade.py` | Omi Arcade menu (tap to talk, the local LLM picks the game; tap-to-lock tilt calibration), mini game windows, Corn Maze art. |
 | `src/sideband/legend.py` | The control legend: which controls each game and state shows (pure), and the colour-coded chips. |
@@ -93,7 +95,7 @@ A connected pendant stops advertising. Close the window before `firmware` or `sc
 | `src/sideband/bluetooth_app.py` | Bluetooth window: scan, switch, reconnect, debug. |
 | `src/sideband/recordings.py` | Recording files, transcripts, the 24 h audio limit. Pure. |
 | `src/sideband/transcribe.py` | Whisper worker (mlx-whisper). |
-| `src/sideband/llm.py` | Local LLM: prompts, context, summaries (pure) and the MLX worker. |
+| `src/sideband/llm.py` | Assistant: prompts, context, summaries, the OpenAI-compatible request and stream parsing (pure) and the worker (MLX or API). |
 | `src/sideband/doctor.py` | `sideband doctor`: setup checks and next steps. |
 | `src/sideband/log.py` | stdout plus an optional file. |
 | `ONBOARDING.md` | Setup playbook for users and their agents. |
