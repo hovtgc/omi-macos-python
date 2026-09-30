@@ -11,7 +11,7 @@ You are a coding agent (Codex, Claude Code, or similar). Work only inside this d
 
 Never flash firmware without the user's explicit yes in chat, asked again before each flash. Never run radio commands bare from your shell; use `--via-app` or `sideband open` (see Bluetooth permission).
 
-This stays a Python application. Do not rewrite it in Swift, JavaScript, or as a web UI. The window is tkinter.
+This stays a Python application. Do not rewrite it in Swift, JavaScript, or as a web UI. The main window is native AppKit through PyObjC (`mac_shell.py`: one window with a sidebar, plus the menu bar icon in `mac_bar.py`); Controls, Bluetooth and the Arcade games are still tkinter while they are ported. `SIDEBAND_TK=1` falls back to the Tk launcher.
 
 ## Product
 
@@ -81,6 +81,11 @@ A connected pendant stops advertising. Close the window before `firmware` or `sc
 | `src/sideband/bundle.py` | Sideband.app and LaunchAgent builders. |
 | `src/sideband/radio.py` | bleak and SMP sessions. |
 | `src/sideband/ui.py` | Launcher (`Hub`): the pendant connection, gesture actions, recorder, transcriber, assistant, voice menu, 24 h audio limit. |
+| `src/sideband/mac_shell.py` | The main window (AppKit): sidebar of thoughts, folders and apps; thought list and page; the floating voice bar. Same methods as the Tk Thought Map. |
+| `src/sideband/mac_bar.py` | Menu bar icon: Omi state, talk, record, latest thoughts. |
+| `src/sideband/macui.py` | Small AppKit helpers (labels, SF Symbols, stacks, cards). |
+| `src/sideband/commands.py` | Talk mode: one voice command layer for every screen (prompt, parsing, keyword fallback, hints). Pure. |
+| `src/sideband/thoughtdoc.py` | A thought file split into its parts for display. Pure. |
 | `src/sideband/transcriber_app.py` | Thought Map window (the transcriber): folder tree, inbox, move / re-file, mature, ask, AI settings. |
 | `src/sideband/buckets.py` | Filing thoughts into folders: prompt, parsing, the bucket block in each transcript, the tree. Pure. |
 | `src/sideband/maturity.py` | Maturing a folder from thought to action: prompt, stages, `maturity.json`. Pure. |

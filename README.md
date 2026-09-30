@@ -6,6 +6,7 @@ Sideband is a Python Mac app that turns an Omi pendant into a Mac companion:
 
 | | App | What it does |
 |---|---|---|
+| 🗣 | **Just talk** | Double tap the Omi (or ⌘L) and sit back: the mic stays open and every phrase is either a command for any screen (“open Shopify”, “what's next?”, “make it an action”, “play sky ace”, “what did I promise this week?”) or a thought to keep. A voice bar shows what it heard and what it did; say “that's all” to stop. |
 | 🧠 | **Thought Map** | Tap to talk (or type, or pick any audio file). Whisper transcribes it on the Mac, then the AI files every thought into folders 2 to 3 levels deep (Work › Clients › Acme) and shows you each new folder. As a folder grows, it **matures the idea**: 🌱 seed → 🌿 growing → 🌳 ready, with one concrete next step you can send to Reminders. It also speaks a callout, writes summaries and action items, and answers questions about a thought, a folder or everything. Audio deletes itself after 24 hours; thoughts stay. |
 | 🎛 | **Controls** | Map single / double / triple / hold taps to Mac actions: open apps, keystrokes, Shortcuts, URLs, volume, record, voice menu, AppleScript, shell. |
 | 🗣 | **Voice menu** | Press ⌘L or tap, then say "start recording", "summarize that", "open arcade", "close". |
