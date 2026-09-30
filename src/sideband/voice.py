@@ -22,6 +22,7 @@ from sideband.protocol import PCM_RATE_HZ
 COMMANDS = ("left", "right", "up", "down", "stop", "exit", "quit")  # exit / quit leave Voice Flap
 GRAMMAR = ["go", *COMMANDS, "game", "[unk]"]
 MODEL_NAME = "vosk-model-small-en-us-0.15"
+PHRASE_MAX_BYTES = 60 * PCM_RATE_HZ * 2  # one minute of 16-bit mono
 MODEL_URL = f"https://alphacephei.com/vosk/models/{MODEL_NAME}.zip"
 
 
@@ -146,12 +147,15 @@ class VoiceListener(threading.Thread):
         on_text: Callable[[str], None],
         menu: bool = False,
         free: bool = False,
+        on_phrase: Callable[[str, bytes], None] | None = None,
     ) -> None:
         super().__init__(daemon=True)
         self.model_dir = model_dir
         self.on_command = on_command
         self.on_text = on_text
         self.free = free  # open vocabulary: every partial goes to on_text, each finished phrase to on_command
+        self.on_phrase = on_phrase  # free only: each finished phrase with its audio, for Whisper
+        self.phrase = bytearray()
         self.grammar = MENU_WORDS if menu else GRAMMAR
         self.make_spotter = MenuSpotter if menu else CommandSpotter
         self.spotter = self.make_spotter()
@@ -188,13 +192,20 @@ class VoiceListener(threading.Thread):
                 return
             if not pcm:  # reset marker
                 recognizer.Reset()
+                self.phrase.clear()
                 self.spotter = self.make_spotter()
                 continue
             if self.free:
+                self.phrase += pcm
+                if len(self.phrase) > PHRASE_MAX_BYTES:  # keep the latest minute
+                    del self.phrase[: len(self.phrase) - PHRASE_MAX_BYTES]
                 if recognizer.AcceptWaveform(pcm):
                     text = json.loads(recognizer.Result()).get("text", "")
                     if text:
                         self.on_command(text)
+                        if self.on_phrase is not None:
+                            self.on_phrase(text, bytes(self.phrase))
+                    self.phrase.clear()
                 else:
                     text = json.loads(recognizer.PartialResult()).get("partial", "")
                     if text:

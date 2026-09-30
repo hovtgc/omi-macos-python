@@ -38,8 +38,11 @@ from sideband.inputs import (
     input_name,
 )
 from sideband.motion import MOTION_UUID, Motion, ShakeDetector, ShakeGate, Tilt2D, parse_motion, steady
-from sideband.protocol import AUDIO_CODEC_UUID, AUDIO_DATA_UUID, BATTERY_LEVEL_UUID, codec_name, strip_packet
-from sideband.llm import Doc, Job, LocalLLM, ask_all_messages, ask_messages, clean_summary, pick_context, summary_messages, transcript_text, with_summary
+from sideband.protocol import AUDIO_CODEC_UUID, AUDIO_DATA_UUID, BATTERY_LEVEL_UUID, PCM_RATE_HZ, codec_name, strip_packet
+from sideband.buckets import Filed, all_folders, bucket_messages, is_new_folder, note_markdown, parse_bucket, read_bucket, with_bucket
+from sideband import maturity
+from sideband.commands import Command, Context, STOP_PHRASES, command_messages, guess_command, parse_command, spoken_reply
+from sideband.llm import Backend, Doc, Job, LocalLLM, ask_all_messages, ask_messages, clean_summary, pick_context, summary_messages, transcript_text, with_summary
 from sideband.llm import arcade_messages, callout_messages, callout_of, clean_callout, guess_arcade, parse_arcade, with_callout
 from sideband.speech import Speaker
 from sideband.llm import title as transcript_title
@@ -52,14 +55,14 @@ STEADY_S = 1.0  # recentring uses the median of this much motion
 SWEEP_MS = 10 * 60 * 1000  # check the 24-hour audio limit this often
 GREY = "#8a8f98"
 APPS = (
-    ("transcriber", "🎙", "Transcriber", "Record from your Omi or pick an audio file. Transcribed on this Mac."),
+    ("transcriber", "🧠", "Thought Map", "Talk into your Omi; each thought is transcribed and filed into folders by the AI."),
     ("controls", "🎛", "Controls", "Map taps to Mac actions and watch every live input."),
     ("arcade", "🕹", "Arcade", "Sky Ace 1943, Omi Flap 3D, Corn Maze, Star Dodger, Omi Catch, Voice Flap. Played with the pendant."),
     ("bluetooth", "📶", "Bluetooth", "Connect, scan, switch pendants and debug the link."),
 )
 REQUEST_MS = 400  # how often the launcher checks for `sideband open <app>` requests
 MENU_LISTEN_S = 5.0
-DEFAULT_SETTINGS = {"auto_summary": True, "speak_callout": True}
+DEFAULT_SETTINGS = {"auto_summary": True, "speak_callout": True, "auto_bucket": True, "auto_mature": True, "llm_kind": "mlx", "llm_model": "", "llm_base_url": ""}
 MENU_HINT = "say: open transcriber · start recording · summarize that · open arcade · play sky ace · close"
 
 
@@ -260,6 +263,10 @@ class Hub:
         self.charging: bool | None = None
         self.game = None  # the open game window: Flap, Voice Flap or a mini game
         self.game_name = ""
+        self.talking = False  # conversation mode: the mic stays open and every phrase is a command or a thought
+        self.talk_job: int | None = None
+        self.native = _native()  # the AppKit shell module, or None to stay on Tk
+        self.menubar = None
         self.last_tap_at = 0.0
         self.menu_voice: VoiceListener | None = None
         self.menu_until: float | None = None
@@ -270,6 +277,10 @@ class Hub:
         self.windows: list[object] = []  # open app windows, most recent last, for "close"
         self.llm: LocalLLM | None = None
         self.job_ids = 0
+        self.bucket_queue: list[Path] = []  # filed one at a time so each sees the folders the last one made
+        self.bucket_busy: Path | None = None
+        self.maturing: set[tuple[str, ...]] = set()  # folders the AI is reading now
+        self.bucket_moved: set[Path] = set()  # moved by hand while the AI was filing it: keep the owner's choice
         self.settings = self._load_settings()
         self.speaker = Speaker()
         self.last_audio = (0, time.monotonic())
@@ -299,7 +310,7 @@ class Hub:
         self.codec = tk.StringVar(value="")
         self.battery = tk.StringVar(value="battery —")
         self.rec_badge = tk.StringVar(value="")
-        self.llm_status = tk.StringVar(value="assistant: local, loads on first use")
+        self.llm_status = tk.StringVar(value=f"assistant: {self.backend().describe()}, starts on first use")
         ttk.Label(top, text="Sideband", font=("Helvetica", 24, "bold")).pack(side="left")
         ttk.Label(top, text="for Omi", foreground=GREY, font=("Helvetica", 14)).pack(side="left", padx=(6, 0), pady=(8, 0))
         for var in (self.battery, self.status):
@@ -368,7 +379,14 @@ class Hub:
         self.root.focus_force()
 
     def open(self, key: str) -> None:
-        if key == "transcriber":
+        if key in ("transcriber", "launcher", "thoughts") and self.native is not None:
+            if self.transcriber_win is None:
+                self.transcriber_win = self.native.ShellWindow(self)
+            self.transcriber_win.lift()
+            self._opened(self.transcriber_win)
+        elif key == "launcher":
+            self.show()
+        elif key == "transcriber":
             from sideband.transcriber_app import TranscriberWindow
 
             if self.transcriber_win is None:
@@ -438,8 +456,10 @@ class Hub:
             self.toggle_mic()
         elif mapping.action == "record":
             self.toggle_recording()
+        elif mapping.action == "talk":
+            self.toggle_talk()
         elif mapping.action == "voice menu":
-            self.voice_menu()
+            self.voice_menu() if self.native is None else self.toggle_talk()
         else:
             self.log(("test " if test else "") + self.app.perform(gesture, mapping))
 
@@ -460,9 +480,33 @@ class Hub:
         self._settings_path.parent.mkdir(parents=True, exist_ok=True)
         self._settings_path.write_text(json.dumps(self.settings, indent=2) + "\n", encoding="utf-8")
 
+    def backend(self) -> Backend:
+        kind = str(self.settings.get("llm_kind") or "mlx")
+        model = str(self.settings.get("llm_model") or "")
+        if kind == "api":
+            return Backend("api", model, str(self.settings.get("llm_base_url") or ""), self.app.api_key())
+        return Backend("mlx", model or Backend().model)
+
+    def set_backend(self, kind: str, model: str, base_url: str, api_key: str | None) -> None:
+        """Switch the assistant. `api_key` None leaves the stored key alone."""
+        if api_key is not None:
+            self.app.set_api_key(api_key)
+        for key, value in (("llm_kind", kind), ("llm_model", model), ("llm_base_url", base_url)):
+            self.settings[key] = value
+        self.set_setting("llm_kind", kind)
+        if self.llm is not None:  # the next job starts the new backend
+            self.llm.close()
+            self.llm = None
+        self.llm_status.set(f"assistant: {self.backend().describe()}")
+        self.log(f"assistant: now {self.backend().describe()}")
+
+    def test_backend(self) -> int:
+        self.llm_status.set(f"assistant: testing {self.backend().describe()}…")
+        return self._job([{"role": "user", "content": "Reply with exactly: Ready to map your thoughts."}], "llm_answer", max_tokens=20)
+
     def _assistant(self) -> LocalLLM:
         if self.llm is None:
-            self.llm = LocalLLM(lambda text: self.post("llm_status", text))
+            self.llm = LocalLLM(lambda text: self.post("llm_status", text), self.backend())
             self.llm.start()
         return self.llm
 
@@ -488,16 +532,18 @@ class Hub:
         self.log(f"{transcript.stem}: summarizing on this Mac")
         return self._job(summary_messages(text), "llm_summary", transcript)
 
-    def ask(self, question: str, transcript: Path | None) -> int:
-        """Ask about one transcript, or (None) about the recent ones, newest first."""
+    def ask(self, question: str, transcript: Path | None, among: list[Path] | None = None) -> int:
+        """Ask about one transcript, or (None) about several, newest first: `among`, else all of them."""
         if transcript is not None:
             messages = ask_messages(question, transcript_text(transcript.read_text(encoding="utf-8")))
         else:
             docs = []
-            for rec in list_recordings(self.app.recordings_dir):
-                if rec.transcript is not None:
-                    markdown = rec.transcript.read_text(encoding="utf-8")
-                    docs.append(Doc(transcript_title(markdown), transcript_text(markdown)))
+            paths = among if among is not None else [r.transcript for r in list_recordings(self.app.recordings_dir) if r.transcript]
+            for path in paths:
+                markdown = path.read_text(encoding="utf-8")
+                filed = read_bucket(path)
+                name = f"{filed.title} ({transcript_title(markdown)})" if filed and filed.title else transcript_title(markdown)
+                docs.append(Doc(name, transcript_text(markdown)))
             messages = ask_all_messages(question, pick_context(docs))
         self.llm_status.set("assistant: thinking…")
         return self._job(messages, "llm_answer", max_tokens=500)
@@ -530,6 +576,312 @@ class Hub:
                 self.speaker.speak(spoken)
         if self.transcriber_win is not None:
             self.transcriber_win.job_done(job_id, spoken, error, transcript)
+
+    # --- thought map: filing each thought into a folder -------------------------------------
+
+    def known_folders(self) -> list[tuple[str, ...]]:
+        found = [f.folder for r in list_recordings(self.app.recordings_dir) if (f := read_bucket(r.transcript))]
+        return all_folders(found)
+
+    def bucket(self, transcript: Path) -> None:
+        """Queue a thought to be filed. Runs one at a time so each sees the folders made before it."""
+        if transcript not in self.bucket_queue and transcript != self.bucket_busy:
+            self.bucket_queue.append(transcript)
+        self._next_bucket()
+
+    def bucket_unsorted(self) -> int:
+        todo = [r.transcript for r in list_recordings(self.app.recordings_dir) if r.transcript and read_bucket(r.transcript) is None]
+        for path in reversed(todo):  # oldest first, so the map grows the way the thoughts came
+            self.bucket(path)
+        return len(todo)
+
+    def bucket_state(self, transcript: Path) -> str:
+        if transcript == self.bucket_busy:
+            return "filing…"
+        return "waiting to file" if transcript in self.bucket_queue else ""
+
+    def _next_bucket(self) -> None:
+        while self.bucket_busy is None and self.bucket_queue:
+            path = self.bucket_queue.pop(0)
+            if not path.exists():
+                continue
+            text = transcript_text(path.read_text(encoding="utf-8"))
+            if not text:
+                continue
+            self.bucket_busy = path
+            self.llm_status.set("assistant: filing a thought…")
+            self._job(bucket_messages(text, self.known_folders()), "llm_bucket", path, max_tokens=60)
+        if self.transcriber_win is not None:
+            self.transcriber_win.refresh()
+
+    def _on_bucket(self, job_id: int, text: str, error: str, transcript: Path) -> None:
+        self.bucket_busy = None
+        self.llm_status.set("assistant: ready")
+        known = self.known_folders()
+        filed = parse_bucket(text, known) if not error else None
+        if transcript in self.bucket_moved:
+            self.bucket_moved.discard(transcript)
+        elif filed is None:
+            self.log(f"{transcript.stem}: could not file it: {error or repr(text[:80])}")
+        elif transcript.exists():
+            fresh = is_new_folder(filed.folder, known)
+            transcript.write_text(with_bucket(transcript.read_text(encoding="utf-8"), filed), encoding="utf-8")
+            self.log(f"{transcript.stem}: 📁 {' › '.join(filed.folder)}" + (" (new folder)" if fresh else ""))
+            if self.transcriber_win is not None:
+                self.transcriber_win.filed(transcript, filed, fresh)
+            if self.settings.get("auto_mature"):
+                self.maybe_mature(filed.folder)
+        self._next_bucket()
+
+    # --- maturing ideas: from thought to action ----------------------------------------------
+
+    def folder_thoughts(self, folder: tuple[str, ...]) -> list[Path]:
+        """Transcripts in a folder and the folders below it, oldest first."""
+        out = []
+        for rec in reversed(list_recordings(self.app.recordings_dir)):
+            filed = read_bucket(rec.transcript)
+            if rec.transcript is not None and filed is not None and filed.folder[: len(folder)] == folder:
+                out.append(rec.transcript)
+        return out
+
+    def maturities(self) -> dict[str, maturity.Maturity]:
+        return maturity.load(self.app.recordings_dir)
+
+    def maybe_mature(self, folder: tuple[str, ...]) -> None:
+        count = len(self.folder_thoughts(folder))
+        if maturity.needs_maturing(self.maturities().get(maturity.key(folder)), count):
+            self.mature(folder)
+
+    def mature(self, folder: tuple[str, ...]) -> int | None:
+        """Ask the AI how far the idea in this folder has come and the next step to act on it."""
+        if folder in self.maturing:
+            return None
+        paths = self.folder_thoughts(folder)
+        thoughts = []
+        for path in paths:
+            markdown = path.read_text(encoding="utf-8")
+            filed = read_bucket(path)
+            when = transcript_title(markdown).split(", ", 1)[-1]
+            thoughts.append((f"{filed.title} ({when})" if filed and filed.title else when, transcript_text(markdown)))
+        if not thoughts:
+            return None
+        self.maturing.add(folder)
+        self.llm_status.set(f"assistant: maturing {' › '.join(folder)}…")
+        docs = pick_context([Doc(w, t) for w, t in reversed(thoughts)])  # newest kept when the folder is long
+        return self._job(maturity.mature_messages(folder, [(d.name, d.text) for d in reversed(docs)]),
+                         "llm_mature", folder, len(paths), max_tokens=300)
+
+    def _on_mature(self, job_id: int, text: str, error: str, folder: tuple[str, ...], count: int) -> None:
+        self.maturing.discard(folder)
+        self.llm_status.set("assistant: ready")
+        entry = maturity.parse_maturity(text, count, time.time()) if not error else None
+        if entry is None:
+            self.log(f"maturing {' › '.join(folder)} failed: {error or repr(text[:80])}")
+        else:
+            entries = self.maturities()
+            entries[maturity.key(folder)] = entry
+            maturity.save(self.app.recordings_dir, entries)
+            self.log(f"{entry.badge} {' › '.join(folder)}: next, {entry.next_action}")
+            if entry.stage == "ready":
+                note = entry.next_action.replace('"', "'")
+                subprocess.Popen(["osascript", "-e", f'display notification "{note}" with title "🌳 Ready for action: {folder[-1]}"'])
+        if self.transcriber_win is not None:
+            self.transcriber_win.matured(job_id, folder, entry, error)
+
+    def to_action(self, folder: tuple[str, ...], action: str | None = None) -> str:
+        """Turn the folder's suggested next step into a reminder. Returns '' or the error."""
+        entries = self.maturities()
+        entry = entries.get(maturity.key(folder))
+        if entry is None:
+            return "mature this folder first"
+        action = (action or entry.next_action).strip()
+        stands = maturity.field(entry.text, "where it stands")
+        error = self.app.add_reminder(action, f"From your Omi thought map: {' › '.join(folder)}\n{stands}")
+        if not error:
+            entries[maturity.key(folder)] = maturity.acted(entry, action)
+            maturity.save(self.app.recordings_dir, entries)
+            self.log(f"✅ {' › '.join(folder)}: added to Reminders: {action}")
+        return error
+
+    # --- talking: one voice layer for every screen ---------------------------------------------
+
+    def voice_context(self) -> Context:
+        from sideband.arcade import GAMES
+
+        win = self.transcriber_win
+        place = "game" if self.game is not None else getattr(win, "place", "thoughts")
+        place = {"all": "thoughts"}.get(place, place)
+        return Context(place, tuple(getattr(win, "folder", ()) or ()), self.known_folders(),
+                       [(g[0], g[1].title()) for g in GAMES], self.rec_path is not None)
+
+    def talk_level(self) -> tuple[float, bool]:
+        on = self.talking and self.radio.mic_on
+        return (mic_meter(self.radio.level_db) if on else 0.0), on
+
+    def toggle_talk(self) -> None:
+        self.set_talking(not self.talking)
+
+    def set_talking(self, on: bool, note: str = "") -> None:
+        win = self.transcriber_win if hasattr(self.transcriber_win, "talk_state") else None
+        if on:
+            if self.status.get() != "connected":
+                note = "Connect your Omi first: it does the listening"
+                on = False
+            elif self.native is not None and win is None and self.game is None:
+                self.open("thoughts")
+                win = self.transcriber_win
+        self.talking = on
+        self._route_mic()
+        if on and not self.radio.mic_on:
+            self.talking = False
+            note = "The Omi's mic isn't ready yet; try again in a second"
+        if self.talking:
+            self._assistant_warm()
+            self.log("talk: listening")
+        if win is not None:
+            win.talk_state(self.talking, note)
+        if not self.talking and note:
+            self.log(f"talk: {note}")
+
+    def _talk_phrase(self, heard: str, pcm: bytes) -> None:
+        win = self.transcriber_win
+        if win is not None and hasattr(win, "heard"):
+            win.heard(heard, True)
+        lower = heard.lower().replace("'", "")
+        if any(p.replace("'", "") in lower for p in STOP_PHRASES):
+            self._run_talk(Command("stop"), heard, pcm)
+            return
+        if self.rec_path is not None:  # a long recording is going: only "stop recording" counts
+            if "stop" in lower and "record" in lower:
+                self._run_talk(Command("record", "stop"), heard, pcm)
+            return
+        if len(heard.split()) < 2 and heard.lower() not in ("help", "pause", "exit", "back"):
+            return  # a stray word ("the", "uh") is not worth the model's time
+        ctx = self.voice_context()
+        self.job_ids += 1
+        job_id = self.job_ids
+        self._assistant().submit(Job(command_messages(heard, ctx), lambda _t: None,
+                                     lambda text, error: self.post("talk_cmd", job_id, text, error, heard, pcm), max_tokens=60))
+        if win is not None and hasattr(win, "did"):
+            win.did("…")
+
+    def _on_talk_cmd(self, job_id: int, reply: str, error: str, heard: str, pcm: bytes) -> None:
+        ctx = self.voice_context()
+        command = parse_command(reply, ctx) if not error else Command("none")
+        if command.verb == "none":
+            command = guess_command(heard, ctx)
+        self.log(f"talk: “{heard}” → {command}" + (f" (assistant: {error})" if error else ""))
+        self._run_talk(command, heard, pcm)
+
+    def _run_talk(self, command: Command, heard: str, pcm: bytes) -> None:
+        win = self.transcriber_win
+        say = getattr(win, "did", lambda _t: None)
+        verb, arg = command.verb, command.arg
+        if verb == "stop":
+            self.set_talking(False, "Okay. Double tap your Omi when you want me again.")
+        elif verb == "go":
+            if arg == "controls":
+                self.open("controls")
+            else:
+                self.open("thoughts")
+                if hasattr(self.transcriber_win, "show_place"):
+                    self.transcriber_win.show_place(arg)
+            say(f"→ {arg}")
+        elif verb == "record":
+            if (arg == "start") != (self.rec_path is not None):
+                self.toggle_recording()
+            say("● Recording. Say “stop recording” when you're done." if arg == "start" else "Saved your recording.")
+        elif verb == "note":
+            path = self._save_spoken(pcm) if len(pcm) > PCM_RATE_HZ else None  # a second or more: let Whisper hear it
+            if path is None:
+                path = self.add_thought(arg or heard)
+            say(f"💭 Kept: “{arg or heard}”")
+            if path is not None and win is not None:
+                win.refresh(select=path.stem)
+        elif verb == "ask":
+            scope = win._scope() if hasattr(win, "_scope") else None
+            self.talk_job = self.ask(arg, None, scope)
+            if hasattr(win, "stream_answer"):
+                win.stream_answer(self.talk_job)
+        elif verb == "mature":
+            folder = getattr(win, "folder", ()) if getattr(win, "place", "") == "folder" else ()
+            if folder:
+                self.mature(folder)
+                say(f"Thinking about what's next for {folder[-1]}…")
+            else:
+                say("Open a folder first, like “open Shopify”, then ask what's next.")
+        elif verb == "act":
+            folder = getattr(win, "folder", ()) if getattr(win, "place", "") == "folder" else ()
+            error = self.to_action(folder) if folder else "open a folder first"
+            say(f"Couldn't: {error}" if error else "✓ Added to Reminders")
+            if not error and win is not None:
+                win.refresh()
+        elif verb == "file":
+            count = self.bucket_unsorted()
+            say(f"Filing {count} thought{'s' * (count != 1)}…" if count else "Your inbox is already sorted.")
+        elif verb == "read":
+            latest = self.latest_transcript()
+            if latest is not None:
+                self.speak_recording(latest)
+        elif verb == "play":
+            self.open_game(arg)
+            say(f"🕹 {arg}. Say “exit game” to come back.")
+        elif verb in ("exit", "pause", "back"):
+            if self.game is not None:
+                self._game_voice("exit" if verb != "pause" else "pause")
+            elif verb == "back" and hasattr(win, "show_place"):
+                win.show_place("thoughts")
+        elif verb == "help":
+            say("Just talk. Say a thought to keep it, ask a question, “open” a folder, “what's next?”, "
+                "“make it an action”, “play sky ace”, or “that's all”.")
+        else:
+            say("I didn't catch a command there. Say it as a thought, or ask for help.")
+            return
+        reply = spoken_reply(command)
+        if reply and verb not in ("act", "stop"):
+            self.speaker.speak(reply)
+
+    def _save_spoken(self, pcm: bytes) -> Path | None:
+        """A spoken thought's own audio, saved as a recording so Whisper transcribes it properly."""
+        import wave
+
+        folder = self.app.recordings_dir
+        folder.mkdir(parents=True, exist_ok=True)
+        path = new_path(folder, time.time())
+        try:
+            with wave.open(str(path), "wb") as handle:
+                handle.setnchannels(1)
+                handle.setsampwidth(2)
+                handle.setframerate(PCM_RATE_HZ)
+                handle.writeframes(pcm)
+        except OSError as exc:
+            self.log(f"talk: could not save the thought: {exc}")
+            return None
+        self.transcriber.submit(path)
+        return path
+
+    def move_thought(self, transcript: Path, folder: tuple[str, ...], title: str) -> None:
+        """Refile by hand. The owner's choice is kept until they ask the AI to file it again."""
+        if transcript in self.bucket_queue:
+            self.bucket_queue.remove(transcript)
+        if transcript == self.bucket_busy:
+            self.bucket_moved.add(transcript)
+        transcript.write_text(with_bucket(transcript.read_text(encoding="utf-8"), Filed(folder, title)), encoding="utf-8")
+        self.log(f"{transcript.stem}: moved to 📁 {' › '.join(folder)}")
+
+    def add_thought(self, text: str) -> Path | None:
+        """A typed thought: saved like a transcript, then filed like any other."""
+        if not text.strip():
+            return None
+        folder = self.app.recordings_dir
+        folder.mkdir(parents=True, exist_ok=True)
+        now = time.time()
+        path = new_path(folder, now).with_suffix(".md")
+        path.write_text(note_markdown(now, text), encoding="utf-8")
+        self.log(f"{path.stem}: typed thought saved")
+        if self.settings.get("auto_bucket"):
+            self.bucket(path)
+        return path
 
     def latest_transcript(self) -> Path | None:
         return next((rec.transcript for rec in list_recordings(self.app.recordings_dir) if rec.transcript), None)
@@ -687,6 +1039,8 @@ class Hub:
             subprocess.Popen(["osascript", "-e", f'display notification "{message}" with title "Omi transcript ready"'])
             if self.settings.get("speak_callout"):
                 self.callout(transcript)  # first: short, so it is spoken within seconds
+            if self.settings.get("auto_bucket"):
+                self.bucket(transcript)  # next: the thought lands on the map quickly
             if self.settings.get("auto_summary"):
                 self.summarize(transcript)
         if self.transcriber_win is not None:
@@ -777,7 +1131,7 @@ class Hub:
         Voice Flap and the launcher's voice menu run their own listeners and take the mic while they do."""
         if self.voice is not None or self.menu_until is not None:
             return
-        wanted = self.arcade is not None or self.game is not None
+        wanted = self.arcade is not None or self.game is not None or self.talking
         if not wanted:
             if self.ear is not None and self.radio.pcm_sink == self.ear.feed:
                 self.radio.pcm_sink = None
@@ -789,6 +1143,7 @@ class Hub:
                 lambda text: self.post("ear_said", text, True),
                 lambda text: self.post("ear_said", text, False),
                 free=True,
+                on_phrase=lambda text, pcm: self.post("ear_phrase", text, pcm),
             )
             self.ear.start()
         if self.radio.pcm_sink == self.ear.feed and self.radio.mic_on:
@@ -822,6 +1177,8 @@ class Hub:
             return
         if self.arcade is not None:
             self.arcade.on_speech(text, final)
+        elif self.talking and self.transcriber_win is not None and hasattr(self.transcriber_win, "heard"):
+            self.transcriber_win.heard(text, final)
 
     def mic_problem(self) -> str | None:
         """Why the Arcade can't hear you, in words, or None when audio is flowing."""
@@ -1058,6 +1415,11 @@ class Hub:
                 else:
                     self.game.command(str(rest[0]))
                 self.log(f"voice: {rest[0]}")
+        elif kind == "ear_phrase":
+            if self.talking and self.game is None and self.arcade is None:
+                self._talk_phrase(str(rest[0]), bytes(rest[1]))  # type: ignore[arg-type]
+        elif kind == "talk_cmd":
+            self._on_talk_cmd(int(rest[0]), str(rest[1]), str(rest[2]), str(rest[3]), bytes(rest[4]))  # type: ignore[arg-type]
         elif kind == "ear_said":
             self._on_ear(str(rest[0]), bool(rest[1]))
         elif kind == "arcade_llm":
@@ -1072,10 +1434,16 @@ class Hub:
                 self.transcriber_win.token(int(rest[0]), str(rest[1]))  # type: ignore[arg-type]
         elif kind == "llm_summary":
             self._on_summary(int(rest[0]), str(rest[1]), str(rest[2]), rest[3])  # type: ignore[arg-type]
+        elif kind == "llm_bucket":
+            self._on_bucket(int(rest[0]), str(rest[1]), str(rest[2]), rest[3])  # type: ignore[arg-type]
+        elif kind == "llm_mature":
+            self._on_mature(int(rest[0]), str(rest[1]), str(rest[2]), rest[3], int(rest[4]))  # type: ignore[arg-type]
         elif kind == "llm_callout":
             self._on_callout(int(rest[0]), str(rest[1]), str(rest[2]), rest[3], bool(rest[4]))  # type: ignore[arg-type]
         elif kind == "llm_answer":
             self.llm_status.set("assistant: ready")
+            if int(rest[0]) == self.talk_job and not rest[2]:  # type: ignore[arg-type]
+                self.speaker.speak(clean_callout(str(rest[1]), 80))
             if self.transcriber_win is not None:
                 self.transcriber_win.job_done(int(rest[0]), str(rest[1]), str(rest[2]), None)  # type: ignore[arg-type]
         elif kind == "menu_cmd":
@@ -1152,6 +1520,8 @@ class Hub:
             self.controls.on_tick(rate, self.radio.mic_on, level_db)
         if self.transcriber_win is not None:
             self.transcriber_win.on_tick()
+        if self.menubar is not None:
+            self.menubar.update()
 
     def _check_requests(self) -> None:
         """`sideband open <app>` from a shell, Shortcuts or Raycast drops a request file here."""
@@ -1160,12 +1530,19 @@ class Hub:
         if request.exists():
             wanted = request.read_text(encoding="utf-8").strip()
             request.unlink(missing_ok=True)
-            self.show()
-            if wanted and wanted != "launcher":
+            if wanted.startswith("snapshot:"):  # an agent asked to see the window (no screen recording needed)
+                if hasattr(self.transcriber_win, "snapshot"):
+                    self.transcriber_win.snapshot(Path(wanted.split(":", 1)[1]))
+                return
+            if self.native is None:
+                self.show()
+            if wanted and (wanted != "launcher" or self.native is not None):
                 self.open(wanted)
 
     def close(self) -> None:
         self.app.launcher_pid_path.unlink(missing_ok=True)
+        if self.menubar is not None:
+            self.menubar.close()
         if self.radio.recording is not None:  # keep what was captured; it is transcribed next launch
             self.radio.recording.close()
             self.radio.recording = None
@@ -1192,14 +1569,37 @@ class Hub:
         self._queue_untranscribed()
         self.root.after(0, self._sweep)
         self.root.after(PUMP_MS, self._pump)
-        if self.open_first:
-            self.root.after(200, lambda: self.open(self.open_first or ""))
-        self.root.lift()
-        self.root.attributes("-topmost", True)
-        self.root.after(800, lambda: self.root.attributes("-topmost", False))
-        self.root.focus_force()
+        if self.native is not None:  # one native window and a menu bar icon; the Tk launcher stays hidden
+            self.root.withdraw()
+            self.root.createcommand("::tk::mac::ReopenApplication", lambda: self.open("thoughts"))
+            try:
+                from sideband.mac_bar import MenuBar
+
+                self.menubar = MenuBar(self)
+            except Exception as exc:
+                self.log(f"menu bar icon unavailable: {exc}")
+            first = self.open_first if self.open_first not in (None, "launcher", "transcriber") else "thoughts"
+            self.root.after(100, lambda: self.open(first or "thoughts"))
+        else:
+            if self.open_first:
+                self.root.after(200, lambda: self.open(self.open_first or ""))
+            self.root.lift()
+            self.root.attributes("-topmost", True)
+            self.root.after(800, lambda: self.root.attributes("-topmost", False))
+            self.root.focus_force()
         self.root.mainloop()
         return 0
+
+
+def _native():
+    """The AppKit shell, when PyObjC is here and not turned off with SIDEBAND_TK=1."""
+    if os.environ.get("SIDEBAND_TK"):
+        return None
+    try:
+        from sideband import mac_shell
+    except Exception:
+        return None
+    return mac_shell
 
 
 def run(app: SidebandApp, address: str | None, open_app: str | None = None) -> int:

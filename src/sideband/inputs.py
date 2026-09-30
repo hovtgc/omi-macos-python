@@ -116,6 +116,7 @@ class ButtonDecoder:
 ACTIONS = {
     # name: hint for the argument, "" when it takes none
     "none": "",
+    "talk": "talk to Sideband: the mic stays open; say a command or just a thought (tap again to stop)",
     "record": "start / stop a recording, transcribed on this Mac (audio kept 24 h)",
     "voice menu": "listen 5 s for a spoken command: open arcade, play marble, start recording…",
     "microphone": "toggle the live pendant mic (level only, nothing recorded)",
@@ -254,7 +255,7 @@ class Mapping:
 def default_gestures() -> dict[str, Mapping]:
     found = {g: Mapping() for g in GESTURES}
     found["single"] = Mapping("notify", "Omi tap")
-    found["double"] = Mapping("microphone", "")
+    found["double"] = Mapping("talk", "")
     return found
 
 

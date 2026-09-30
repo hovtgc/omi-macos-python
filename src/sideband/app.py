@@ -169,6 +169,46 @@ class SidebandApp:
 
         return sweep(self.recordings_dir, time.time(), keep=keep)
 
+    # --- Assistant API key ---------------------------------------------------------------------
+
+    KEYCHAIN_SERVICE = "Sideband assistant API key"
+
+    def api_key(self) -> str:
+        """The key for a hosted assistant API: the login Keychain, else $SIDEBAND_API_KEY."""
+        try:
+            found = subprocess.run(
+                ["security", "find-generic-password", "-s", self.KEYCHAIN_SERVICE, "-w"],
+                capture_output=True, text=True, timeout=5,
+            )
+            if found.returncode == 0 and found.stdout.strip():
+                return found.stdout.strip()
+        except (OSError, subprocess.SubprocessError):
+            pass
+        return os.environ.get("SIDEBAND_API_KEY", "")
+
+    def set_api_key(self, key: str) -> None:
+        """Keep the key in the login Keychain (never in settings.json). An empty key removes it."""
+        subprocess.run(["security", "delete-generic-password", "-s", self.KEYCHAIN_SERVICE], capture_output=True)
+        if key:
+            subprocess.run(
+                ["security", "add-generic-password", "-U", "-s", self.KEYCHAIN_SERVICE, "-a", "sideband", "-w", key],
+                capture_output=True, check=True,
+            )
+
+    @staticmethod
+    def add_reminder(name: str, notes: str) -> str:
+        """Add a reminder to the default list in Apple Reminders. Returns '' or the error."""
+
+        def quoted(text: str) -> str:
+            return '"' + text.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+        script = f"tell application \"Reminders\" to make new reminder with properties {{name:{quoted(name)}, body:{quoted(notes)}}}"
+        try:
+            done = subprocess.run(["osascript", "-e", script], capture_output=True, text=True, timeout=20)
+        except (OSError, subprocess.SubprocessError) as exc:
+            return str(exc)
+        return "" if done.returncode == 0 else (done.stderr.strip() or "Reminders refused")
+
     @staticmethod
     def open_path(path: Path, reveal: bool = False) -> None:
         """Open a file in its default app, or reveal it in Finder."""
