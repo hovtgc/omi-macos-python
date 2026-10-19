@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import math
 import os
+import random
 import subprocess
 import tempfile
 import time
@@ -27,12 +28,12 @@ W, H = 960, 640
 VIEW_H = 460
 RAYS = 200
 FOV = math.radians(66)
-FRAME_MS = 33
-HAZE = (168, 148, 118)
+FRAME_MS = 16
+HAZE = (214, 126, 58)
 WALL = {
-    "#": ((196, 162, 104), (148, 116, 70)),
-    "B": ((132, 136, 122), (84, 90, 78)),
-    "F": ((92, 42, 28), (48, 22, 16)),
+    "#": ((214, 176, 112), (162, 124, 72)),
+    "B": ((118, 122, 108), (72, 76, 66)),
+    "F": ((78, 32, 18), (36, 16, 12)),
 }
 SPRITE = {
     "soldier": ("#6d7a48", 0.32, 0.85),
@@ -60,6 +61,8 @@ class DesertWindow:
         self._warping = False
         self.recorded = False
         self.over_at = 0.0
+        self.jolt = 0
+        self.motes = [(random.random(), random.random(), random.uniform(0.2, 1)) for _ in range(48)]
         self._wavs = _tones()
         self.raid = Raid()
         self.top.bind("<KeyPress>", self._key_down)
@@ -204,8 +207,10 @@ class DesertWindow:
             self.raid.step(dt, self._orders(dt))
             if self.raid.score > before:
                 _blip(self._wavs["hit"])
+                self.jolt = 5
             elif self.raid.gun.mag < mag:
                 _blip(self._wavs["shot"])
+                self._kick = 26
             if self.raid.over and not self.recorded:
                 self.recorded = True
                 self.over_at = now
@@ -218,19 +223,28 @@ class DesertWindow:
         c = self.canvas
         c.delete("dyn")
         self._world()
+        self._rifle()
         self._hud()
+        if self.jolt:
+            c.move("dyn", random.randint(-self.jolt, self.jolt), random.randint(-self.jolt, self.jolt))
+            self.jolt -= 1
 
     def _world(self) -> None:
         c, raid = self.canvas, self.raid
         horizon = VIEW_H / 2 + self.pitch
-        for i, colour in enumerate(("#5c7084", "#8ea0ae", "#d4b48a", "#c6a56e")):
-            y0 = i * horizon / 3 if i < 3 else horizon
-            y1 = horizon if i < 3 else VIEW_H
-            if i == 3:
-                y0, y1 = horizon, VIEW_H
-            if i < 3:
-                y0, y1 = horizon * i / 3, horizon * (i + 1) / 3
-            c.create_rectangle(0, y0, W, y1 + 1, fill=colour, outline="", tags="dyn")
+        sky = ((120, 48, 28), (186, 78, 32), (232, 122, 48), (255, 168, 84))
+        for i, colour in enumerate(sky):
+            y0, y1 = horizon * i / len(sky), horizon * (i + 1) / len(sky)
+            c.create_rectangle(0, max(0, y0), W, y1 + 1, fill="#%02x%02x%02x" % colour, outline="", tags="dyn")
+        ground = ((196, 150, 86), (176, 128, 70), (150, 108, 62))
+        for i, colour in enumerate(ground):
+            y0 = horizon + (VIEW_H - horizon) * i / len(ground)
+            y1 = horizon + (VIEW_H - horizon) * (i + 1) / len(ground)
+            c.create_rectangle(0, y0, W, y1 + 1, fill="#%02x%02x%02x" % colour, outline="", tags="dyn")
+        for u, v, depth in self.motes:
+            mx = (u * W + time.monotonic() * 12 * depth) % W
+            my = v * max(8, horizon)
+            c.create_oval(mx, my, mx + 2, my + 2, fill="#f0c090", outline="", tags="dyn")
         zbuf = [99.0] * RAYS
         half = math.tan(FOV / 2)
         col_w = W / RAYS
@@ -241,10 +255,20 @@ class DesertWindow:
             zbuf[i] = dist
             shade = WALL.get(cell, WALL["#"])[side]
             fog = min(1.0, dist / 11)
-            colour = "#%02x%02x%02x" % tuple(int(channel + (haze - channel) * fog) for channel, haze in zip(shade, HAZE))
+            base = tuple(int(channel + (haze - channel) * fog) for channel, haze in zip(shade, HAZE))
             height = min(VIEW_H * 1.4, (VIEW_H * 0.85) / dist)
-            x = i * col_w
-            c.create_line(x + col_w / 2, horizon - height / 2, x + col_w / 2, horizon + height / 2, fill=colour, width=col_w + 1, tags="dyn")
+            xmid = i * col_w + col_w / 2
+            top = horizon - height / 2
+            if cell == "#" and dist < 7:
+                for band in range(5):
+                    tone = tuple(max(0, min(255, int(ch * (0.76 if band % 2 else 1)))) for ch in base)
+                    y0 = top + height * band / 5
+                    y1 = top + height * (band + 1) / 5
+                    c.create_line(xmid, y0, xmid, y1, fill="#%02x%02x%02x" % tone, width=col_w + 1, tags="dyn")
+            else:
+                c.create_line(xmid, top, xmid, horizon + height / 2, fill="#%02x%02x%02x" % base, width=col_w + 1, tags="dyn")
+            if cell == "F":
+                c.create_line(xmid, horizon, xmid, horizon + height * 0.45, fill="#ff5a12", width=col_w + 1, tags="dyn")
         sprites: list[tuple[float, str, float, float, str]] = []
         for actor in raid.live():
             fill, wide, tall = SPRITE[actor.kind]
@@ -269,12 +293,70 @@ class DesertWindow:
             if mid < 0 or mid >= RAYS or zbuf[mid] < depth:
                 continue
             c.create_rectangle(screen - wide / 2, horizon - tall, screen + wide / 2, horizon + tall * 0.15, fill=fill, outline="", tags="dyn")
+        self._columns(horizon, zbuf, half, col_w)
+        self._tank(horizon, zbuf, half, col_w)
         if raid.hit_flash > 0:
-            c.create_rectangle(8, 8, W - 8, VIEW_H - 8, outline="#e6c15a", width=8, tags="dyn")
+            c.create_rectangle(8, 8, W - 8, VIEW_H - 8, outline="#ffb15a", width=8, tags="dyn")
         c.create_rectangle(W / 2 - 8, horizon - 1, W / 2 - 3, horizon + 1, fill="#f7f4ee", outline="", tags="dyn")
         c.create_rectangle(W / 2 + 3, horizon - 1, W / 2 + 8, horizon + 1, fill="#f7f4ee", outline="", tags="dyn")
         c.create_rectangle(W / 2 - 1, horizon - 8, W / 2 + 1, horizon - 3, fill="#f7f4ee", outline="", tags="dyn")
         c.create_rectangle(W / 2 - 1, horizon + 3, W / 2 + 1, horizon + 8, fill="#f7f4ee", outline="", tags="dyn")
+
+    def _billboard(self, wx: float, wy: float, horizon: float, zbuf: list[float], half: float, col_w: float) -> tuple[float, float, float] | None:
+        side, depth = project(wx - self.raid.x, wy - self.raid.y, self.raid.angle)
+        if depth < 0.45:
+            return None
+        focal = (RAYS / 2) / half
+        screen = W / 2 + (side / depth) * focal * col_w
+        mid = int(screen / col_w)
+        if mid < 0 or mid >= RAYS or zbuf[mid] + 1.5 < depth:
+            return None
+        return screen, depth, (VIEW_H * 0.55) / depth
+
+    def _columns(self, horizon: float, zbuf: list[float], half: float, col_w: float) -> None:
+        c, raid = self.canvas, self.raid
+        for y, row in enumerate(raid.grid):
+            for x, cell in enumerate(row):
+                if cell != "F":
+                    continue
+                placed = self._billboard(x + 0.5, y + 0.5, horizon, zbuf, half, col_w)
+                if placed is None:
+                    continue
+                screen, _depth, size = placed
+                for k in range(6):
+                    rise = size * (0.55 + k * 0.62)
+                    radius = size * (0.28 + k * 0.2)
+                    drift = math.sin(time.monotonic() * 0.55 + k + x) * (3 + k * 2)
+                    shade = 28 + k * 16
+                    c.create_oval(screen - radius + drift, horizon - rise - radius * 0.45,
+                                  screen + radius + drift, horizon - rise + radius * 0.35,
+                                  fill="#%02x%02x%02x" % (shade, max(0, shade - 10), max(0, shade - 18)), outline="", tags="dyn")
+                c.create_oval(screen - size * 0.22, horizon - size * 0.2, screen + size * 0.22, horizon + size * 0.08,
+                              fill="#ff6a14", outline="", tags="dyn")
+
+    def _tank(self, horizon: float, zbuf: list[float], half: float, col_w: float) -> None:
+        placed = self._billboard(8.2, 14.8, horizon, zbuf, half, col_w)
+        if placed is None:
+            return
+        screen, _depth, size = placed
+        c = self.canvas
+        w, h = size * 1.4, size * 0.45
+        c.create_polygon(screen - w, horizon, screen + w, horizon, screen + w * 0.7, horizon - h, screen - w * 0.7, horizon - h,
+                         fill="#3e4634", outline="#1c2018", tags="dyn")
+        c.create_rectangle(screen - w * 0.2, horizon - h * 1.7, screen + w * 0.55, horizon - h * 0.7, fill="#2c3226", outline="", tags="dyn")
+        c.create_oval(screen - w * 0.7, horizon - h * 0.35, screen - w * 0.2, horizon + h * 0.15, fill="#1a1c16", outline="", tags="dyn")
+        c.create_oval(screen + w * 0.15, horizon - h * 0.35, screen + w * 0.7, horizon + h * 0.15, fill="#1a1c16", outline="", tags="dyn")
+
+    def _rifle(self) -> None:
+        c = self.canvas
+        kick = getattr(self, "_kick", 0)
+        bob = math.sin(time.monotonic() * 7) * 3
+        x, y = W * 0.58, VIEW_H - 8 + bob - kick
+        c.create_polygon(x, y, x + 250, y + 18, x + 230, y + 64, x - 30, y + 42, fill="#6d734c", outline="#2a2e20", width=2, tags="dyn")
+        c.create_polygon(x + 36, y + 6, x + 230, y - 8, x + 214, y + 22, x + 24, y + 30, fill="#8c9364", outline="", tags="dyn")
+        c.create_rectangle(x + 160, y + 4, x + 360, y + 16, fill="#2e3228", outline="", tags="dyn")
+        c.create_oval(x + 78, y + 22, x + 142, y + 58, fill="#c4a574", outline="", tags="dyn")
+        self._kick = max(0, kick - 4)
 
     def _hud(self) -> None:
         c, raid = self.canvas, self.raid

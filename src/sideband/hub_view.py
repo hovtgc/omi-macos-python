@@ -30,7 +30,7 @@ if TYPE_CHECKING:
 AW, AH = 1240, 760
 CARD_W = 520
 GAP = 28
-MENU_MS = 33
+MENU_MS = 16
 INK = "#0e0f12"
 PAPER = "#f5f6f8"
 MUTED = "#a4a6ad"

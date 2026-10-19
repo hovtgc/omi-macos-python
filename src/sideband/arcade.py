@@ -30,6 +30,7 @@ from sideband.minigames import (
 )
 from sideband.legend import draw_ear, draw_legend, legend, round_rect
 from sideband.platform import LIBRARY
+from sideband.sfx import blip
 
 if TYPE_CHECKING:
     from sideband.ui import Hub
@@ -68,8 +69,10 @@ class MiniGameWindow:
         self.shake = False
         self.flash = 0
         self.recorded = False
-        self.stars = [(random.uniform(0, W), random.uniform(0, H), random.uniform(0.3, 1.0)) for _ in range(90)]
+        self.stars = [(random.uniform(0, W), random.uniform(0, H), random.uniform(0.3, 1.0)) for _ in range(110)]
+        self.leaves = [[random.uniform(0, W), random.uniform(0, H), random.uniform(28, 70), random.random() * 6] for _ in range(36)]
         self.maze_level = 0
+        self.jolt = 0
         self.top.bind("<KeyPress>", self._key_down)
         self.top.bind("<KeyRelease>", lambda e: self.keys.discard(e.keysym.lower()))
         self.canvas.bind("<Button-1>", lambda _e: self._pointer())
@@ -155,7 +158,12 @@ class MiniGameWindow:
         self._job = self.top.after(FRAME_MS, self._tick)  # first, so a drawing error cannot stop the loop
         x, y, label = self._stick()
         if self.state == "playing":
+            before = getattr(self.game, "score", None)
             self.game.step(FRAME_MS / 1000, Stick(x, y, self.taps, self.shake))
+            after = getattr(self.game, "score", None)
+            if before is not None and after is not None and after > before:
+                self.jolt = 6
+                blip("pop", 640, 45, 0.22)
             if getattr(self.game, "over", False):
                 self.state = "over"
                 self.over_at = time.monotonic()
@@ -168,6 +176,9 @@ class MiniGameWindow:
         getattr(self, f"_draw_{self.name}")()
         self._hud(label)
         self.flash = max(0, self.flash - 1)
+        if self.jolt:
+            self.canvas.move("dyn", random.randint(-self.jolt, self.jolt), random.randint(-self.jolt, self.jolt))
+            self.jolt -= 1
 
     def _hud(self, label: str) -> None:
         c = self.canvas
@@ -206,13 +217,13 @@ class MiniGameWindow:
         c, g = self.canvas, self.game
         cell, ox, oy = self._maze_geometry()
         rng = random.Random(g.level)
-        c.create_rectangle(0, 0, W, H, fill="#7ccf4a", outline="", tags="maze")
-        c.create_rectangle(0, 0, W, 50, fill="#8fd4ff", outline="", tags="maze")
-        c.create_oval(W - 110, -40, W - 10, 60, fill="#ffe66d", outline="", tags="maze")
-        for _ in range(140):  # grass tufts
-            x, y = rng.uniform(0, W), rng.uniform(52, H - 32)
-            c.create_line(x, y, x - 3, y - 7, fill="#5aa83a", width=2, tags="maze")
-            c.create_line(x, y, x + 3, y - 7, fill="#5aa83a", width=2, tags="maze")
+        for i in range(16):
+            c.create_rectangle(0, i * H / 16, W, (i + 1) * H / 16 + 1, fill=_mix((28, 10, 48), (92, 42, 88), i / 15), outline="", tags="maze")
+        c.create_oval(W - 150, 8, W - 40, 118, fill="#ffd2a8", outline="", tags="maze")
+        c.create_oval(W - 176, -8, W - 14, 146, outline="#ffb0c8", width=8, tags="maze")
+        for _ in range(80):
+            x, y = rng.uniform(0, W), rng.uniform(70, H - 40)
+            c.create_oval(x, y, x + 3, y + 7, fill="#3a6a32", outline="", tags="maze")
         x0, y0, x1, y1 = ox, oy, ox + cell * g.cols, oy + cell * g.rows
         c.create_rectangle(x0 - 16, y0 - 16, x1 + 16, y1 + 16, fill="#d6a86b", outline="", tags="maze")  # dirt yard
         for row in range(g.rows):
@@ -240,13 +251,15 @@ class MiniGameWindow:
                 for bit, line in ((WALL_N, (ax, ay, bx, ay)), (WALL_W, (ax, ay, ax, by)), (WALL_S, (ax, by, bx, by)), (WALL_E, (bx, ay, bx, by))):
                     if not walls & bit:
                         continue
-                    c.create_line(*line, fill="#2f7d24", width=width + 4, capstyle="round", tags="maze")
-                    c.create_line(*line, fill="#4fae34", width=width, capstyle="round", tags="maze")
-                    steps = 3
+                    c.create_line(*line, fill="#1c4a18", width=width + 10, capstyle="round", tags="maze")
+                    c.create_line(*line, fill="#2f7a28", width=width + 4, capstyle="round", tags="maze")
+                    c.create_line(*line, fill="#6cae3a", width=max(3, width - 2), capstyle="round", tags="maze")
+                    steps = 4
                     for k in range(steps + 1):
                         px = line[0] + (line[2] - line[0]) * k / steps
                         py = line[1] + (line[3] - line[1]) * k / steps
-                        c.create_oval(px - width * 0.22, py - width * 0.45, px + width * 0.22, py + width * 0.2, fill="#ffd23f", outline="#c79a00", tags="maze")
+                        c.create_oval(px - width * 0.35, py - width * 0.9, px + width * 0.35, py + width * 0.15, fill="#3f8a2c", outline="", tags="maze")
+                        c.create_oval(px - width * 0.12, py - width * 0.55, px + width * 0.12, py - width * 0.15, fill="#ffb347", outline="", tags="maze")
         c.create_text(ox + cell / 2, oy + cell * 0.18, text="START", fill="#5c3a18", font=("Helvetica", max(8, int(cell * 0.16)), "bold"), tags="maze")
         gx, gy = g.goal  # the red barn
         bx, by = ox + gx * cell + cell / 2, oy + gy * cell + cell / 2
@@ -256,6 +269,14 @@ class MiniGameWindow:
         c.create_rectangle(bx - s * 0.42, by + s * 0.2, bx + s * 0.42, by + s, fill="#f4f0e6", outline="", tags="maze")
         c.create_line(bx - s * 0.42, by + s * 0.2, bx + s * 0.42, by + s, fill="#c0282d", width=2, tags="maze")
         c.create_line(bx + s * 0.42, by + s * 0.2, bx - s * 0.42, by + s, fill="#c0282d", width=2, tags="maze")
+        c.create_oval(bx - s * 1.3, by - s * 0.2, bx + s * 1.3, by + s * 1.3, outline="#ffb0a0", width=2, tags="maze")
+        for row in range(g.rows):
+            for col in range(g.cols):
+                if bin(g.walls[row][col]).count("1") >= 3:
+                    continue
+                lx, ly = ox + col * cell + cell * 0.5, oy + row * cell + cell * 0.18
+                c.create_line(lx, ly - 8, lx, ly + 6, fill="#5c3a18", width=2, tags="maze")
+                c.create_oval(lx - 5, ly - 14, lx + 5, ly - 4, fill="#ffb347", outline="#fff1c9", tags="maze")
 
     def _draw_corn(self) -> None:
         c, g = self.canvas, self.game
@@ -267,17 +288,29 @@ class MiniGameWindow:
             c.tag_lower("maze")
         px, py = ox + g.x * cell, oy + g.y * cell
         r = MARBLE_R * cell * 1.05
-        c.create_oval(px - r + 3, py - r * 0.2 + r * 0.9, px + r + 3, py + r * 0.35 + r * 0.9, fill="#8a6a3c", outline="", tags="dyn")
-        spin = (g.x + g.y) * 2.2  # the pumpkin's ribs roll as it moves
-        body = (255, 200, 90) if self.flash else (245, 128, 25)
-        c.create_oval(px - r, py - r * 0.9, px + r, py + r * 0.9, fill=_mix(body, (120, 50, 0), 0.25), outline="#a34d00", width=2, tags="dyn")
+        for leaf in self.leaves:
+            leaf[0] += math.sin(leaf[3]) * 0.6
+            leaf[1] += leaf[2] * 0.02
+            leaf[3] += 0.08
+            if leaf[1] > H:
+                leaf[0], leaf[1] = random.uniform(0, W), -10
+            c.create_oval(leaf[0], leaf[1], leaf[0] + 8, leaf[1] + 4, fill="#e07a3a", outline="", tags="dyn")
+        c.create_oval(px - r * 1.8, py - r * 1.5, px + r * 1.8, py + r * 1.6, outline="#ffd27a", width=3, tags="dyn")
+        c.create_oval(px - r + 3, py - r * 0.2 + r * 0.9, px + r + 3, py + r * 0.35 + r * 0.9, fill="#3a2418", outline="", tags="dyn")
+        spin = (g.x + g.y) * 2.2
+        body = (255, 210, 110) if self.flash else (255, 140, 30)
+        c.create_oval(px - r, py - r * 0.9, px + r, py + r * 0.9, fill=_mix(body, (120, 50, 0), 0.2), outline="#ffefc2", width=2, tags="dyn")
         for k in range(-2, 3):
             offset = math.sin(spin + k * 0.7) * r * 0.55
-            c.create_oval(px + offset - r * 0.35, py - r * 0.88, px + offset + r * 0.35, py + r * 0.88, outline="#c45f00", width=2, tags="dyn")
-        c.create_oval(px - r * 0.45, py - r * 0.6, px - r * 0.05, py - r * 0.25, fill="#ffc07a", outline="", tags="dyn")
-        c.create_rectangle(px - r * 0.12, py - r * 1.25, px + r * 0.12, py - r * 0.8, fill="#3f7a22", outline="", tags="dyn")
-        c.create_text(20, 26, anchor="w", text=f"CORN MAZE · level {g.level}", fill="#1d4d12", font=("Helvetica", 20, "bold italic"), tags="dyn")
-        c.create_text(W - 20, 26, anchor="e", text=f"⏱ {g.elapsed:5.1f} s", fill="#1d4d12", font=("Helvetica", 20, "bold"), tags="dyn")
+            c.create_oval(px + offset - r * 0.35, py - r * 0.88, px + offset + r * 0.35, py + r * 0.88, outline="#ff8a1a", width=2, tags="dyn")
+        # jack-o-lantern face
+        c.create_polygon(px - r * 0.38, py - r * 0.15, px - r * 0.12, py - r * 0.15, px - r * 0.25, py + r * 0.05, fill="#2a1208", outline="", tags="dyn")
+        c.create_polygon(px + r * 0.12, py - r * 0.15, px + r * 0.38, py - r * 0.15, px + r * 0.25, py + r * 0.05, fill="#2a1208", outline="", tags="dyn")
+        c.create_arc(px - r * 0.28, py + r * 0.05, px + r * 0.28, py + r * 0.45, start=200, extent=140, style="arc", outline="#2a1208", width=2, tags="dyn")
+        c.create_oval(px - r * 0.45, py - r * 0.55, px - r * 0.1, py - r * 0.22, fill="#fff1c2", outline="", tags="dyn")
+        c.create_rectangle(px - r * 0.12, py - r * 1.35, px + r * 0.12, py - r * 0.75, fill="#2f6a28", outline="", tags="dyn")
+        c.create_text(20, 26, anchor="w", text=f"CORN MAZE  ·  level {g.level}", fill="#fff4e8", font=("Helvetica", 20, "bold"), tags="dyn")
+        c.create_text(W - 20, 26, anchor="e", text=f"{g.elapsed:5.1f} s", fill="#fff4e8", font=("Helvetica", 20, "bold"), tags="dyn")
         if g.won:
             if not self.recorded:
                 self.recorded = True
@@ -297,57 +330,78 @@ class MiniGameWindow:
         scale = (H - 40) / FIELD_H
         ox = (W - FIELD_W * scale) / 2
         t = time.monotonic()
-        for sx, sy, depth in self.stars:  # parallax starfield
-            y = (sy + t * 40 * depth) % H
-            c.create_oval(sx, y, sx + 1.5 * depth + 0.5, y + 1.5 * depth + 0.5, fill=_mix((60, 70, 110), (230, 235, 255), depth), outline="", tags="dyn")
-        c.create_rectangle(ox, 0, ox + FIELD_W * scale, H - 30, outline="#27305a", tags="dyn")
+        for i in range(14):
+            c.create_rectangle(0, i * H / 14, W, (i + 1) * H / 14 + 1, fill=_mix((18, 8, 48), (36, 24, 92), i / 13), outline="", tags="dyn")
+        for k in range(5):
+            cy = (t * 30 + k * 90) % (H + 80) - 40
+            c.create_oval(-40 + k * 30, cy, 280 + k * 80, cy + 70, fill="", outline="#6a4ad4", width=2, tags="dyn")
+        for sx, sy, depth in self.stars:
+            y = (sy + t * 220 * depth) % (H + 30)
+            length = 10 + 28 * depth
+            c.create_line(sx, y, sx, y + length, fill=_mix((80, 90, 160), (220, 240, 255), depth), width=2, tags="dyn")
         for rx, ry, rr, _speed in g.rocks:
             x, y, r = ox + rx * scale, ry * scale, rr * scale
+            spin = t * 1.4 + rr
             points = []
-            for k in range(9):
-                a = k / 9 * math.tau
-                wobble = 0.8 + 0.2 * math.sin(k * 2.3 + rr)
+            for k in range(8):
+                a = spin + k / 8 * math.tau
+                wobble = 0.72 + 0.28 * math.sin(k * 2.1 + rr * 3)
                 points += [x + math.cos(a) * r * wobble, y + math.sin(a) * r * wobble]
-            c.create_polygon(points, fill="#7a6a5a", outline="#b8a48c", width=2, tags="dyn")
+            c.create_polygon(points, fill="#3a342c", outline="#9aa8b4", width=2, tags="dyn")
+            c.create_oval(x - r * 0.2, y - r * 0.35, x + r * 0.15, y, fill="#6a7884", outline="", tags="dyn")
         for bx, by in g.bullets:
             x, y = ox + bx * scale, by * scale
-            c.create_line(x, y, x, y + 10, fill="#7df9ff", width=3, tags="dyn")
-        blink = g.hurt_s > 0 and int(g.hurt_s * 10) % 2 == 0
+            c.create_line(x, y - 16, x, y + 10, fill="#ff4d4d", width=4, tags="dyn")
+            c.create_line(x, y - 16, x, y + 4, fill="#fff1f1", width=1, tags="dyn")
+        blink = g.hurt_s > 0 and int(g.hurt_s * 12) % 2 == 0
         if not blink:
-            x, y, s = ox + g.x * scale, g.y * scale, SHIP_R * scale * 1.3
-            c.create_polygon(x, y - s * 1.3, x - s, y + s, x, y + s * 0.5, x + s, y + s, fill="#ffc440", outline="#fff3c4", width=2, tags="dyn")
-            c.create_oval(x - 4, y + s * 0.6, x + 4, y + s * 1.4, fill="#ff6b3d", outline="", tags="dyn")
-        if g.flash_s > 0:  # the bomb: a shockwave ring out from the ship
-            t = 1 - g.flash_s / 0.35
-            x, y, r = ox + g.x * scale, g.y * scale, 30 + t * W
-            for k, colour, width in ((0, "#ffffff", 6), (14, "#ffb347", 4), (28, "#ff5fa2", 2)):
+            x, y, s = ox + g.x * scale, g.y * scale, SHIP_R * scale * 1.35
+            c.create_polygon(x, y - s * 1.45, x - s * 0.85, y + s * 0.85, x, y + s * 0.35, x + s * 0.85, y + s * 0.85,
+                             fill="#f4f7fb", outline="#7ee0ff", width=2, tags="dyn")
+            c.create_polygon(x - s * 0.35, y + s * 0.2, x, y + s * 1.15, x + s * 0.35, y + s * 0.2, fill="#3ec6ff", outline="", tags="dyn")
+            c.create_oval(x - 5, y + s * 0.7, x + 5, y + s * 1.7, fill="#7af0ff", outline="", tags="dyn")
+        if g.flash_s > 0:
+            age = 1 - g.flash_s / 0.35
+            x, y, r = ox + g.x * scale, g.y * scale, 30 + age * W
+            for k, colour, width in ((0, "#ffffff", 6), (14, "#7af0ff", 4), (28, "#ff5a6a", 2)):
                 c.create_oval(x - r + k, y - r + k, x + r - k, y + r - k, outline=colour, width=width, tags="dyn")
         c.create_text(20, 22, anchor="w", text=f"{g.score}", fill="white", font=("Helvetica", 22, "bold"), tags="dyn")
-        c.create_text(W - 20, 22, anchor="e", text="♥" * g.lives, fill="#ff6b6b", font=("Helvetica", 20), tags="dyn")
-        c.create_text(W - 20, 48, anchor="e", text=f"bombs {'◆' * g.bombs or '—'}  (shake)", fill="#ffb347", font=("Helvetica", 14, "bold"), tags="dyn")
+        c.create_text(W - 20, 22, anchor="e", text="♥" * g.lives, fill="#ff6b8a", font=("Helvetica", 20), tags="dyn")
+        c.create_text(W - 20, 48, anchor="e", text=f"bombs {'◆' * g.bombs or '—'}", fill="#9ad7ff", font=("Helvetica", 14, "bold"), tags="dyn")
 
     # --- Omi Catch ------------------------------------------------------------------------
 
     def _draw_catch(self) -> None:
         c, g = self.canvas, self.game
         sx, sy = W / CATCH_W, (H - 60) / 100.0
-        for i in range(12):
-            c.create_rectangle(0, i * H / 12, W, (i + 1) * H / 12 + 1, fill=_mix((12, 18, 44), (40, 30, 80), i / 11), outline="", tags="dyn")
-        for x, y, _speed, bomb in g.drops:
+        t = time.monotonic()
+        for i in range(14):
+            c.create_rectangle(0, i * H / 14, W, (i + 1) * H / 14 + 1, fill=_mix((10, 6, 28), (64, 18, 72), i / 13), outline="", tags="dyn")
+        for k in range(4):
+            cy = 40 + k * 70 + math.sin(t * 0.4 + k) * 12
+            c.create_oval(40 + k * 160, cy, 280 + k * 150, cy + 48, outline="#ff7ad0", width=2, tags="dyn")
+        for x, y, speed, bomb in g.drops:
             px, py = x * sx, 20 + y * sy
             if bomb:
-                c.create_oval(px - 12, py - 12, px + 12, py + 12, fill="#222", outline="#ff4d4d", width=2, tags="dyn")
-                c.create_line(px + 6, py - 10, px + 12, py - 20, fill="#ffb347", width=2, tags="dyn")
+                c.create_oval(px - 14, py - 12, px + 14, py + 14, fill="#141414", outline="#2a2a2a", width=2, tags="dyn")
+                fuse = math.sin(t * 18) > 0
+                c.create_line(px + 6, py - 10, px + 14, py - 22, fill="#e8d2a0", width=2, tags="dyn")
+                c.create_oval(px + 10, py - 28, px + 18, py - 20, fill="#ffb347" if fuse else "#fff1c0", outline="", tags="dyn")
             else:
-                c.create_text(px, py, text="★", fill="#ffd84d", font=("Helvetica", 30), tags="dyn")
+                c.create_line(px, py - 18, px, py - 4, fill="#ffe9a0", width=2, tags="dyn")
+                c.create_oval(px - 8, py - 8, px + 8, py + 8, fill="#ffe27a", outline="#fff8d8", tags="dyn")
+                c.create_line(px - 12, py, px + 12, py, px, py - 12, px, py + 12, fill="#fff6c8", width=1, tags="dyn")
         bx, by = g.basket * sx, 20 + 95 * sy
         half = BASKET_HALF * sx
-        c.create_polygon(bx - half, by - 16, bx + half, by - 16, bx + half * 0.8, by + 12, bx - half * 0.8, by + 12,
-                         fill="#c77d3a" if not self.flash else "#ffd08a", outline="#ffd08a", width=2, tags="dyn")
+        c.create_polygon(bx - half, by - 18, bx + half, by - 18, bx + half * 0.78, by + 16, bx - half * 0.78, by + 16,
+                         fill="#8a5a32" if not self.flash else "#ffd08a", outline="#f0d2a4", width=2, tags="dyn")
+        for k in range(-3, 4):
+            c.create_line(bx + k * half * 0.18, by - 16, bx + k * half * 0.14, by + 14, fill="#c49462", tags="dyn")
+        c.create_arc(bx - half, by - 28, bx + half, by - 6, start=0, extent=180, style="arc", outline="#f3d7b0", width=3, tags="dyn")
         c.create_text(20, 22, anchor="w", text=f"{g.score}", fill="white", font=("Helvetica", 22, "bold"), tags="dyn")
         streak = f"streak {g.streak}" if g.streak >= 5 else ""
-        c.create_text(W / 2, 22, text=streak, fill="#ffd84d", font=("Helvetica", 16, "bold"), tags="dyn")
-        c.create_text(W - 20, 22, anchor="e", text="✕" * g.misses + "○" * (3 - g.misses), fill="#ff8080", font=("Helvetica", 18), tags="dyn")
+        c.create_text(W / 2, 22, text=streak, fill="#ffe27a", font=("Helvetica", 16, "bold"), tags="dyn")
+        c.create_text(W - 20, 22, anchor="e", text="✕" * g.misses + "○" * (3 - g.misses), fill="#ff9ec8", font=("Helvetica", 18), tags="dyn")
 
     def close(self) -> None:
         self.top.after_cancel(self._job)
