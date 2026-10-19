@@ -18,7 +18,7 @@ import tkinter as tk
 from dataclasses import dataclass, field
 from typing import Callable
 
-from sideband.legend import draw_ear, draw_legend, legend
+from sideband.legend import device_of, draw_ear, draw_legend, legend
 
 # World
 HALF_W, CEIL = 6.0, 8.0
@@ -189,6 +189,9 @@ class GameWindow:
         voice: bool = False,
         voice_status: Callable[[], tuple[bool, str]] = lambda: (False, ""),
         ear: Callable[[], tuple[float | None, str, float]] = lambda: (None, "", 99.0),
+        device_source: Callable[[], str] | None = None,
+        on_device: Callable[[str], None] = lambda _name: None,
+        on_mic: Callable[[], None] | None = None,
     ) -> None:
         self.ear = ear  # the pendant mic: level, last words heard, their age
         self.game = Flight(seed=random.randrange(1 << 30), voice=voice)
@@ -199,6 +202,9 @@ class GameWindow:
         self.on_close = on_close
         self.steer_source = steer_source
         self.on_key = on_key
+        self.device_source = device_source
+        self.on_device = on_device
+        self.on_mic = on_mic
         self.keys: set[str] = set()
         self.flash = 0
         self.trail: list[tuple[float, float, float]] = []
@@ -220,8 +226,11 @@ class GameWindow:
         self.top.bind("<space>", lambda _e: self.on_tap("single"))
         self.top.bind("<Return>", lambda _e: self.on_tap("single"))
         self.top.bind("<Escape>", lambda _e: self.on_hold() if self.playing else self.on_tap("double"))
+        self.top.bind("x", lambda _e: self.on_tap("double") if self.playing else None)
+        self.top.bind("w", lambda _e: self.on_tap("single"))
         self.top.bind("<KeyPress>", self._key_down)
         self.top.bind("<KeyRelease>", lambda e: self.keys.discard(e.keysym.lower()))
+        self.canvas.bind("<Button-1>", lambda _e: self._pointer())
         self.top.protocol("WM_DELETE_WINDOW", self.close)
         self.top.focus_force()
         self._tick()
@@ -238,8 +247,11 @@ class GameWindow:
         """The Arcade's shared flow: one tap starts / resumes / plays again, double tap goes back; taps flap in play."""
         g, double = self.game, kind == "double"
         if self.playing:
-            if not self.voice:
-                self.flap(BOOST if double else 1.0)
+            if self.voice:
+                if not double and self.on_mic is not None:
+                    self.on_mic()
+                return
+            self.flap(BOOST if double else 1.0)
             return
         if double:
             if g.alive or g.since_death >= RETRY_S:
@@ -274,8 +286,20 @@ class GameWindow:
     def _key_down(self, event: tk.Event) -> None:
         key = event.keysym.lower()
         self.keys.add(key)
+        self.on_device("keys")
         if key in ("c", "x", "i"):
             self.on_key(key)
+
+    def _pointer(self) -> None:
+        self.on_device("keys")
+        self.on_tap("single")
+
+    def _device(self) -> str:
+        if self.device_source is not None:
+            return self.device_source()
+        if self.voice:
+            return "keys"
+        return device_of(self.steer_label)
 
     def _steer(self) -> tuple[float, str]:
         if self.voice:
@@ -419,8 +443,9 @@ class GameWindow:
         if g.best:
             c.create_text(WIDTH - 20, 26, anchor="e", text=f"best {g.best}", fill="#c9d4ff", font=("Helvetica", 14), tags="dyn")
         name = "voice" if self.voice else "flap"
+        device = self._device()
         c.create_rectangle(0, HEIGHT - 40, WIDTH, HEIGHT, fill="#0a0f22", outline="", stipple="gray50", tags="dyn")
-        draw_legend(c, WIDTH / 2 - 70, HEIGHT - 20, legend(name, motion=self.voice or self.steer_label != "keys ← →"),
+        draw_legend(c, WIDTH / 2 - 70, HEIGHT - 20, legend(name, device=device, motion=device == "omi"),
                     size=12, max_width=WIDTH - 200)
         if not self.voice:  # live steering gauge
             bx = WIDTH - 150
@@ -431,14 +456,14 @@ class GameWindow:
             self._voice_hud()
         draw_ear(c, WIDTH - 10, HEIGHT - 56, *self.ear())
         if not g.started:
-            hint = ("then tap for the mic and say go left · right · up · down" if self.voice
+            hint = ("arrows or say go left · right · up · down · space for the mic" if self.voice
                     else "fly the ball through the glowing gaps")
-            self._banner("VOICE FLAP" if self.voice else "OMI FLAP 3D", hint, legend(name, "ready"), "#ffd23f")
+            self._banner("VOICE FLAP" if self.voice else "OMI FLAP 3D", hint, legend(name, "ready", device=device), "#ffd23f")
         elif not g.alive:
             c.create_rectangle(6, 6, WIDTH - 6, HEIGHT - 6, outline="#ff4d4d", width=12, tags="dyn")
-            self._banner("CRASHED", f"score {g.score}  ·  best {g.best}", legend(name, "over"), "#ff6b5b")
+            self._banner("CRASHED", f"score {g.score}  ·  best {g.best}", legend(name, "over", device=device), "#ff6b5b")
         elif self.paused:
-            self._banner("PAUSED", "", legend(name, "paused"), "#7fd4ff")
+            self._banner("PAUSED", "", legend(name, "paused", device=device), "#7fd4ff")
 
     def _banner(self, title: str, text: str, items: tuple[tuple[str, str], ...], colour: str) -> None:
         c, cx, cy = self.canvas, WIDTH / 2, HEIGHT / 2
@@ -452,7 +477,8 @@ class GameWindow:
     def _voice_hud(self) -> None:
         c = self.canvas
         listening, heard = self.voice_status()
-        badge, colour = ("● LISTENING", "#3ddc84") if listening else ("MUTED · tap pendant", "#ff6b6b")
+        muted = "MUTED · space" if self._device() == "keys" else "MUTED · tap"
+        badge, colour = ("● LISTENING", "#3ddc84") if listening else (muted, "#ff6b6b")
         c.create_rectangle(14, 14, 214, 44, fill="#0a0f22", outline=colour, width=2, tags="dyn")
         c.create_text(114, 29, text=badge, fill=colour, font=("Helvetica", 14, "bold"), tags="dyn")
         if heard:

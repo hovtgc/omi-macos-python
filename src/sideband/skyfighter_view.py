@@ -62,6 +62,7 @@ class FighterWindow:
         self._sky()
         self.top.bind("<KeyPress>", self._key_down)
         self.top.bind("<KeyRelease>", lambda e: self.keys.discard(e.keysym.lower()))
+        self.canvas.bind("<Button-1>", lambda _e: self._pointer())
         self.top.protocol("WM_DELETE_WINDOW", self.close)
         self.top.focus_force()
         self._last = time.monotonic()
@@ -106,17 +107,25 @@ class FighterWindow:
     def _key_down(self, event: tk.Event) -> None:
         key = event.keysym.lower()
         self.keys.add(key)
+        self.hub.note_device("keys")
+        # Arrows and WASD fly the plane. Space and Enter fire, so climbing does not shoot.
         if key in ("space", "return"):
             self.on_tap("single")
+        elif key == "x" and self.state == "playing":
+            self.on_tap("double")
         elif key == "escape":
             self.on_tap("double") if self.state != "playing" else self.on_hold()
-        elif key == "b":
+        elif key == "b" and self.state == "playing":
             self.on_shake()
         elif key == "c":
             self.hub.recentre()
 
+    def _pointer(self) -> None:
+        self.hub.note_device("keys")
+        self.on_tap("single")
+
     def _stick(self) -> tuple[float, float, str]:
-        pendant = self.hub.stick()
+        pendant = self.hub.play_axes()
         if pendant is not None:
             return pendant
         x = (1.0 if self.keys & {"right", "d"} else 0.0) - (1.0 if self.keys & {"left", "a"} else 0.0)
@@ -285,15 +294,16 @@ class FighterWindow:
         roll = "ROLL READY · shake" if not g.roll_ready and not g.roll else ("ROLLING!" if g.roll else f"roll in {g.roll_ready:.1f}s")
         c.create_text(W - 260, 22, anchor="e", text=roll, fill="#ffe27a", font=("Helvetica", 13, "bold"), tags="dyn")
         c.create_rectangle(0, H - 36, W, H, fill="#0b1633", outline="", stipple="gray50", tags="dyn")
-        draw_legend(c, W / 2, H - 18, legend("fighter", motion=self.source != "keys"), size=12, max_width=W - 24)
+        device = self.hub.active_device()
+        draw_legend(c, W / 2, H - 18, legend("fighter", device=device, motion=device == "omi"), size=12, max_width=W - 24)
         draw_ear(c, W - 10, H - 54, *self.hub.ear_state())
         if self.state == "ready":
-            self._banner("SKY ACE 1943", "shoot down the bombers · watch your six", legend("fighter", "ready"), "#ffcf3d")
+            self._banner("SKY ACE 1943", "shoot down the bombers · watch your six", legend("fighter", "ready", device=device), "#ffcf3d")
         elif self.state == "paused":
-            self._banner("PAUSED", "", legend("fighter", "paused"), "#7fd4ff")
+            self._banner("PAUSED", "", legend("fighter", "paused", device=device), "#7fd4ff")
         elif self.state == "over":
             best = int(self.hub.best("fighter") or 0)
-            self._banner("SHOT DOWN", f"score {g.score:,} · {g.kills} kills · best {best:,}", legend("fighter", "over"), "#ff6b5b")
+            self._banner("SHOT DOWN", f"score {g.score:,} · {g.kills} kills · best {best:,}", legend("fighter", "over", device=device), "#ff6b5b")
 
     def _banner(self, title: str, text: str, items: tuple[tuple[str, str], ...], colour: str) -> None:
         c = self.canvas

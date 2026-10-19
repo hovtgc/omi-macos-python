@@ -75,7 +75,8 @@ class MenuBar:
         menu.addItem_(AppKit.NSMenuItem.separatorItem())
         self._add(menu, "Stop Talking" if hub.talking else "Talk to Sideband", hub.toggle_talk, icon="waveform")
         self._add(menu, "Stop Recording" if hub.rec_path else "Record a Thought", hub.toggle_recording, icon="record.circle")
-        self._add(menu, "Open Sideband", lambda: hub.open("thoughts"), icon="brain.head.profile")
+        self._add(menu, "Open Arcade", lambda: hub.open("arcade"), icon="gamecontroller.fill")
+        self._add(menu, "Thought Map", lambda: hub.open("thoughts"), icon="brain.head.profile")
         recent = [r for r in list_recordings(hub.app.recordings_dir) if r.transcript is not None][:5]
         if recent:
             menu.addItem_(AppKit.NSMenuItem.separatorItem())

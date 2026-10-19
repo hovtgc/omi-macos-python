@@ -1,22 +1,13 @@
-"""Omi Arcade: a neon game menu you talk to, and the mini game windows.
+"""Corn Maze, Star Dodger and Omi Catch. The shelf itself is `hub_view.ArcadeWindow`.
 
-The menu has one control. Tap the pendant (or click the mic bar) and say what you want: "play sky ace",
-"the corn one", "play this", "recalibrate". The pendant mic streams to an offline open-vocabulary
-listener and the local LLM decides what the words mean (keywords stand in without it). "This" is the
-highlighted game: the one the mouse is over, the one you named, or the one you just played.
-
-The mic stays on in every game, so "exit game", "pause" and "play again" work mid-game too. The tilt games
-need to know which way is right and forward, so the first visit runs a calibration wizard where each step
-locks with one tap (it reads the median of the last second, so the press does not skew it). Say
-"recalibrate" to run it again. Every game shares one flow: tap to start, resume or play again, double tap
-back to the Arcade, hold to pause. The legend at the bottom (`legend.py`) says what each control does.
+Every game shares one flow: confirm starts, resumes or plays again; cancel goes back to the shelf;
+hold pauses. Confirm is a single tap, Enter or A. Cancel is a double tap, Esc or B.
 """
 
 from __future__ import annotations
 
 import math
 import random
-import subprocess
 import time
 import tkinter as tk
 from typing import TYPE_CHECKING, Callable
@@ -37,526 +28,22 @@ from sideband.minigames import (
     StarDodger,
     Stick,
 )
-from sideband.legend import chip, draw_ear, draw_legend, draw_meter, draw_mic, legend, round_rect
-from sideband.motion import Motion
+from sideband.legend import draw_ear, draw_legend, legend, round_rect
+from sideband.platform import LIBRARY
 
 if TYPE_CHECKING:
     from sideband.ui import Hub
 
-# key, title, how to play, tile colours (top, bottom), icon
-GAMES = (
-    ("fighter", "SKY ACE 1943", "WWII dogfight · tilt to fly · tap fires · shake rolls", ("#ff9f1c", "#b8321a"), "plane"),
-    ("flap", "OMI FLAP 3D", "tap to flap · tilt to steer", ("#3ad0ff", "#2250c8"), "ball"),
-    ("corn", "CORN MAZE", "tilt to roll the pumpkin to the barn", ("#ffd23f", "#4f9e2f"), "corn"),
-    ("dodger", "STAR DODGER", "tilt to fly · tap fires · shake bombs", ("#b56cff", "#4a1d9e"), "rocket"),
-    ("catch", "OMI CATCH", "tilt the basket · catch stars · dodge bombs", ("#ff5fa2", "#a8166b"), "basket"),
-    ("voice", "VOICE FLAP", "tap for the mic · say go left / right / up / down", ("#4dffb0", "#157a5a"), "bubble"),
-)
-AW, AH = 1040, 700
-LISTEN_S = 7.0  # how long a tap listens for you to start talking
-MIN_TILT_DEG = 8.0  # how far "tilt right" / "tilt forward" must go before a tap locks it
-SOUNDS = {"move": "Pop", "back": "Bottle", "play": "Hero", "step": "Tink", "done": "Glass", "recal": "Purr"}
-
-
-def sfx(name: str, enabled: bool = True) -> None:
-    """A short macOS system sound, fire and forget."""
-    if enabled and name in SOUNDS:
-        try:
-            subprocess.Popen(["afplay", "-v", "0.35", f"/System/Library/Sounds/{SOUNDS[name]}.aiff"],
-                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        except OSError:
-            pass
-
+# key, title, how to play, tile colours (top, bottom), icon. Same list the shelf draws.
+GAMES = tuple((spec.key, spec.title, spec.blurb, spec.colors, spec.icon) for spec in LIBRARY)
 
 W, H = 760, 560
 FRAME_MS = 16
-MENU_MS = 33
-NEON = "#ff4fd8"
 
 
 def _mix(a: tuple[int, int, int], b: tuple[int, int, int], t: float) -> str:
     t = max(0.0, min(1.0, t))
     return "#%02x%02x%02x" % tuple(round(x + (y - x) * t) for x, y in zip(a, b))
-
-
-def _hex(colour: str) -> tuple[int, int, int]:
-    return int(colour[1:3], 16), int(colour[3:5], 16), int(colour[5:7], 16)
-
-
-def _ball(c: tk.Canvas, x: float, y: float, r: float, body: tuple[int, int, int], tag: str = "dyn") -> None:
-    """Shaded sphere: rings from a dark rim to a lit spot up and to the left."""
-    dark = tuple(int(v * 0.55) for v in body)
-    for i in range(7):
-        t = i / 6
-        rr = r * (1 - 0.8 * t)
-        ox = oy = -r * 0.3 * t
-        colour = _mix(dark, body, t * 1.6) if t < 0.62 else _mix(body, (255, 255, 255), (t - 0.62) / 0.38)  # type: ignore[arg-type]
-        c.create_oval(x + ox - rr, y + oy - rr, x + ox + rr, y + oy + rr, fill=colour, outline="", tags=tag)
-
-
-def _icon(c: tk.Canvas, kind: str, x: float, y: float, s: float, tag: str) -> None:
-    """Little vector art for each game, drawn at centre (x, y) and size s."""
-    if kind == "plane":
-        c.create_polygon(x - s, y + s * 0.1, x + s, y + s * 0.1, x + s * 0.9, y + s * 0.3, x - s * 0.9, y + s * 0.3, fill="#5a6b3c", outline="#2a3320", tags=tag)
-        c.create_polygon(x - s * 0.18, y - s * 0.9, x + s * 0.18, y - s * 0.9, x + s * 0.22, y + s * 0.9, x - s * 0.22, y + s * 0.9, fill="#6b7d46", outline="#2a3320", tags=tag)
-        c.create_polygon(x - s * 0.45, y + s * 0.75, x + s * 0.45, y + s * 0.75, x + s * 0.4, y + s * 0.9, x - s * 0.4, y + s * 0.9, fill="#5a6b3c", tags=tag)
-        for r, col in ((0.22, "#1c3a8a"), (0.14, "#f2f2f2"), (0.07, "#c0282d")):
-            for side in (-0.62, 0.62):
-                c.create_oval(x + side * s - r * s, y + 0.2 * s - r * s, x + side * s + r * s, y + 0.2 * s + r * s, fill=col, outline="", tags=tag)
-        c.create_oval(x - s * 0.5, y - s * 1.08, x + s * 0.5, y - s * 0.92, outline="#dddddd", tags=tag)
-    elif kind == "ball":
-        _ball(c, x, y, s * 0.7, (255, 196, 64), tag)
-        for k in range(3):
-            c.create_oval(x - s * 1.1 + k * s * 0.25, y + s * 0.2 - k * s * 0.1, x - s * 0.95 + k * s * 0.25, y + s * 0.35 - k * s * 0.1, fill="#fff3c4", outline="", tags=tag)
-    elif kind == "corn":
-        c.create_oval(x - s * 0.35, y - s * 0.95, x + s * 0.35, y + s * 0.75, fill="#ffd23f", outline="#c79a00", width=2, tags=tag)
-        for row in range(6):
-            for col in range(3):
-                cx, cy = x - s * 0.2 + col * s * 0.2, y - s * 0.65 + row * s * 0.24
-                c.create_oval(cx - s * 0.07, cy - s * 0.08, cx + s * 0.07, cy + s * 0.08, fill="#ffe680", outline="", tags=tag)
-        c.create_polygon(x, y + s * 0.95, x - s * 0.75, y - s * 0.2, x - s * 0.2, y + s * 0.4, fill="#3fa34d", outline="#2a6e33", tags=tag)
-        c.create_polygon(x, y + s * 0.95, x + s * 0.75, y - s * 0.2, x + s * 0.2, y + s * 0.4, fill="#4fbf5a", outline="#2a6e33", tags=tag)
-    elif kind == "rocket":
-        c.create_polygon(x, y - s, x + s * 0.4, y + s * 0.3, x - s * 0.4, y + s * 0.3, fill="#f2f2ff", outline="#9c8cff", width=2, tags=tag)
-        c.create_polygon(x - s * 0.4, y + s * 0.3, x - s * 0.7, y + s * 0.7, x - s * 0.2, y + s * 0.4, fill="#ff5fa2", tags=tag)
-        c.create_polygon(x + s * 0.4, y + s * 0.3, x + s * 0.7, y + s * 0.7, x + s * 0.2, y + s * 0.4, fill="#ff5fa2", tags=tag)
-        c.create_oval(x - s * 0.15, y - s * 0.35, x + s * 0.15, y - s * 0.05, fill="#3ad0ff", outline="", tags=tag)
-        c.create_polygon(x - s * 0.2, y + s * 0.35, x + s * 0.2, y + s * 0.35, x, y + s * 1.0, fill="#ffb347", tags=tag)
-    elif kind == "basket":
-        c.create_polygon(x - s * 0.8, y, x + s * 0.8, y, x + s * 0.6, y + s * 0.7, x - s * 0.6, y + s * 0.7, fill="#c77d3a", outline="#7a4a1c", width=2, tags=tag)
-        for k in range(4):
-            c.create_line(x - s * 0.7 + k * s * 0.47, y, x - s * 0.55 + k * s * 0.37, y + s * 0.7, fill="#7a4a1c", tags=tag)
-        c.create_text(x, y - s * 0.55, text="★", fill="#ffd84d", font=("Helvetica", int(s * 1.1)), tags=tag)
-    elif kind == "bubble":
-        round_rect(c, x - s, y - s * 0.75, x + s, y + s * 0.45, s * 0.35, fill="#e9fff6", outline="#157a5a", width=2, tags=tag)
-        c.create_polygon(x - s * 0.4, y + s * 0.4, x - s * 0.1, y + s * 0.4, x - s * 0.55, y + s * 0.9, fill="#e9fff6", outline="#157a5a", tags=tag)
-        c.create_text(x, y - s * 0.15, text="go ◀ ▶", fill="#157a5a", font=("Helvetica", int(s * 0.42), "bold"), tags=tag)
-
-
-WIZARD = (
-    ("rest", "HOLD IT HOW YOU PLAY", "get comfy, like a joystick, then tap once to lock it in"),
-    ("right", "TILT RIGHT ▶", "tip the right side down, keep it there, then tap"),
-    ("forward", "TILT FORWARD ▲", "tip the far edge down, keep it there, then tap"),
-)
-
-
-class ArcadeWindow:
-    """The menu is voice first: tap the pendant (or click the mic bar) and say what you want. Click a game to just play it."""
-
-    def __init__(self, hub: Hub) -> None:
-        self.hub = hub
-        self.top = tk.Toplevel(hub.root)
-        self.top.title("Omi Arcade")
-        self.top.resizable(False, False)
-        self.top.protocol("WM_DELETE_WINDOW", self.close)
-        self.canvas = tk.Canvas(self.top, width=AW, height=AH, highlightthickness=0, bg="#12002b")
-        self.canvas.pack()
-        self.selected = 0  # the highlighted game: "play this" means this one
-        self.mode = "idle"  # idle → listening → thinking → idle
-        self.heard = ""
-        self.listen_until = self.think_since = self.listen_started = 0.0
-        self.level = 0.0  # the mic meter, eased
-        self.launch: tuple[str, float] | None = None  # (game, when): a short beat to see the pick
-        self.clock = 0.0
-        self.toast: tuple[str, float] = ("", 0.0)
-        self.stars = [(random.uniform(0, AW), random.uniform(0, AH * 0.55), random.uniform(0, math.tau)) for _ in range(120)]
-        self.tiles: list[tuple[float, float, float, float]] = []
-        self._layout()
-        self.glow = list(self._box(self.selected))  # the highlight frame, eased toward the chosen game
-        self._background()
-        self.top.bind("<KeyPress>", self._key)
-        self.canvas.bind("<Button-1>", self._click)
-        self.canvas.bind("<Motion>", self._hover)
-        # The tilt games need to know which way is right and forward: the full wizard, once ever.
-        self.step: int | None = None
-        if not self.hub.tilt_calibrated():
-            self.recalibrate()
-        self._last = time.monotonic()
-        self._tick()
-
-    # --- layout ---------------------------------------------------------------------------
-
-    def _layout(self) -> None:
-        cols, rows, gap = 3, 2, 26
-        left, top, width, height = 60, 190, AW - 120, 390
-        tw, th = (width - gap * (cols - 1)) / cols, (height - gap * (rows - 1)) / rows
-        self.tiles = [(left + (i % cols) * (tw + gap), top + (i // cols) * (th + gap), tw, th) for i in range(len(GAMES))]
-
-    def _box(self, item: int) -> tuple[float, float, float, float]:
-        x, y, w, h = self.tiles[item]
-        return x, y, x + w, y + h
-
-    def _background(self) -> None:
-        c = self.canvas
-        for i in range(28):
-            y0 = i * AH * 0.6 / 28
-            c.create_rectangle(0, y0, AW, y0 + AH * 0.6 / 28 + 1, fill=_mix((18, 0, 43), (120, 20, 110), i / 27), outline="", tags="bg")
-        sun_y = AH * 0.6
-        for i in range(12):  # striped synthwave sun sinking into the horizon
-            r = 150
-            y = sun_y - r + i * r * 2 / 12
-            half = math.sqrt(max(0.0, r * r - (y - sun_y) ** 2))
-            if i % 2 == 0 or i < 6:
-                c.create_rectangle(AW / 2 - half, y, AW / 2 + half, y + r * 2 / 12 * (0.9 if i < 6 else 0.55),
-                                   fill=_mix((255, 222, 89), (255, 60, 150), i / 11), outline="", tags="bg")
-        c.create_rectangle(0, sun_y, AW, AH, fill="#0d0221", outline="", tags="bg")
-
-    # --- input: one control, then your voice ------------------------------------------------
-
-    def on_tap(self, kind: str) -> None:
-        """A pendant tap or a click: talk (or stop talking). While calibrating it locks the step."""
-        if self.step is not None:
-            if kind == "single":
-                self._lock()
-            else:
-                self._finish_calibration("Kept the last calibration")
-            return
-        if self.mode == "listening":
-            self._idle("")
-        elif self.mode == "idle":
-            self.listen()
-
-    def on_hold(self) -> None:
-        pass
-
-    def listen(self) -> None:
-        problem = self.hub.mic_problem()
-        if problem:
-            self._toast(problem)
-            return
-        self.mode, self.heard = "listening", ""
-        self.listen_started = time.monotonic()
-        self.listen_until = self.listen_started + LISTEN_S
-        self._sfx("step")
-
-    def on_speech(self, text: str, final: bool) -> None:
-        """Words from the pendant mic. Only a phrase said after a tap counts; chatter is ignored."""
-        if self.mode != "listening":
-            return
-        self.heard = text
-        self.listen_until = max(self.listen_until, time.monotonic() + 2.5)  # still talking: keep listening
-        if final:
-            self.mode, self.think_since = "thinking", time.monotonic()
-            self.hub.arcade_intent(text, GAMES[self.selected][0])
-
-    def on_intent(self, intent: str, heard: str) -> None:
-        """The LLM's reading of what was said: play:<game>, show:<game>, recalibrate, close, help or none."""
-        if self.mode != "thinking":
-            return
-        self.mode = "idle"
-        keys = [g[0] for g in GAMES]
-        verb, _, key = intent.partition(":")
-        if verb in ("play", "show") and key in keys:
-            self._select(keys.index(key))
-            _key, title, how, *_rest = GAMES[self.selected]
-            if verb == "play":
-                self._sfx("play")
-                self._toast(f"▶  {title}")
-                self.launch = (key, time.monotonic() + 0.7)
-            else:
-                self._toast(f"{title} · {how}")
-        elif intent == "recalibrate":
-            self.recalibrate()
-        elif intent == "close":
-            self.close()
-        elif intent == "help":
-            self._toast("Say “play sky ace”, “the corn one”, “play this” or “recalibrate”")
-        else:
-            self._sfx("back")
-            self._toast(f"Heard “{heard}” · not sure what you meant. Tap and try again")
-
-    def _idle(self, message: str) -> None:
-        self.mode, self.heard = "idle", ""
-        if message:
-            self._toast(message)
-
-    def _click(self, event: tk.Event) -> None:
-        """The mouse works as a mouse: click a game to play it, click the mic bar to talk."""
-        if self.step is not None:
-            self.on_tap("single")  # calibrating: a click locks the step, like a tap
-            return
-        if event.y >= AH - 100:
-            self.on_tap("single")
-            return
-        for i, game in enumerate(GAMES):
-            x0, y0, x1, y1 = self._box(i)
-            if x0 <= event.x <= x1 and y0 <= event.y <= y1 and self.mode != "thinking":
-                self._select(i)
-                self._idle("")
-                self._sfx("play")
-                self.hub.open_game(game[0])
-                return
-
-    def _hover(self, event: tk.Event) -> None:
-        """The mouse points at a game, so "play this" means that one."""
-        if self.mode != "idle" or self.step is not None:
-            return
-        for i in range(len(GAMES)):
-            x0, y0, x1, y1 = self._box(i)
-            if x0 <= event.x <= x1 and y0 <= event.y <= y1 and i != self.selected:
-                self._select(i)
-
-    def _key(self, event: tk.Event) -> None:
-        if event.keysym.lower() in ("space", "return"):
-            self.on_tap("single")
-
-    def returned(self, game: str) -> None:
-        """Back from a game: that game stays highlighted, so "play this again" works."""
-        keys = [g[0] for g in GAMES]
-        if game in keys:
-            self._select(keys.index(game))
-        self._idle("")
-        self.launch = None
-
-    def _select(self, item: int) -> None:
-        if item != self.selected:
-            self.selected = item
-            self._sfx("move")
-
-    def _sfx(self, name: str) -> None:
-        sfx(name, bool(self.hub.settings.get("arcade_sound", True)))
-
-    def _toast(self, text: str) -> None:
-        self.toast = (text, time.monotonic())
-
-    def refresh_scores(self) -> None:
-        pass  # scores are read fresh every frame
-
-    # --- calibration: tap to lock each step --------------------------------------------------
-
-    def recalibrate(self) -> None:
-        self._sfx("recal")
-        self.mode = "idle"
-        self.step = 0
-        self.step_started = time.monotonic()
-
-    def _lock(self) -> None:
-        """The tap: take the steady reading of the last second as this step's answer."""
-        sample = self.hub.steady_motion()
-        if sample is None:
-            self._finish_calibration("No motion stream: the tilt games need the motion firmware")
-            return
-        name = WIZARD[self.step][0]
-        if name != "rest" and not self.hub.tilt.learn(name, sample, min_deg=MIN_TILT_DEG):
-            self._sfx("back")
-            self._toast("A little further, hold it, then tap")
-            return
-        if name == "rest":
-            self.hub.tilt.learn("rest", sample)
-        self.step += 1
-        if self.step >= len(WIZARD):
-            self.hub.save_tilt()
-            self._sfx("done")
-            self._finish_calibration("Calibrated ✓  Tap and say what you want to play")
-        else:
-            self._sfx("step")
-
-    def _step_degrees(self) -> float | None:
-        """Live: how far the pendant is tipped from the locked rest, for the right / forward steps."""
-        sample = self.hub.latest_motion()
-        return None if sample is None else self.hub.tilt.degrees_from_rest(sample)
-
-    def on_motion(self, sample: Motion) -> None:
-        pass  # the hub keeps recent samples for the tap-to-lock reading
-
-    def _finish_calibration(self, message: str) -> None:
-        self.step = None
-        self._toast(message)
-
-    # --- drawing --------------------------------------------------------------------------
-
-    def _tick(self) -> None:
-        self._job = self.top.after(MENU_MS, self._tick)
-        now = time.monotonic()
-        dt, self._last = now - self._last, now
-        self.clock += dt
-        if self.step is not None and self.hub.latest_motion() is None and now - self.step_started > 1.5:
-            self._finish_calibration("No motion stream: the tilt games need the motion firmware")
-        if self.mode == "listening" and now > self.listen_until:
-            self._idle("Didn't catch that · tap and try again")
-        if self.launch is not None and now >= self.launch[1]:
-            game, self.launch = self.launch[0], None
-            self.hub.open_game(game)
-        target = self._box(self.selected)
-        ease = min(1.0, dt * 14)
-        self.glow = [g + (t - g) * ease for g, t in zip(self.glow, target)]
-        c = self.canvas
-        c.delete("dyn")
-        self._grid()
-        self._title()
-        self._status()
-        for i, game in enumerate(GAMES):
-            self._tile(i, game)
-        self._frame()
-        self._voice_bar(now)
-        if self.step is not None:
-            self._calibration()
-        text, at = self.toast
-        if text and now - at < 3.0:
-            fade = min(1.0, (now - at) / 3.0)
-            ty = 159 if self.step is None else AH / 2 + 222  # under the calibration card
-            round_rect(c, AW / 2 - 360, ty - 19, AW / 2 + 360, ty + 19, 18, fill="#1b0540", outline=NEON, width=2, tags="dyn")
-            c.create_text(AW / 2, ty, text=text, fill=_mix((255, 255, 255), (255, 79, 216), fade), font=("Helvetica", 16, "bold"), tags="dyn")
-
-    def _status(self) -> None:
-        c, hub = self.canvas, self.hub
-        connected = hub.status.get() == "connected"
-        level = hub.battery_level
-        parts = ["OMI"] + ([f"{level}%"] if level is not None else []) + (["⚡"] if hub.charging else [])
-        parts.append("mic ✓" if hub.radio.mic_on else "mic off")
-        text = "  ".join(parts) if connected else f"OMI {hub.status.get()}"
-        round_rect(c, 24, 20, 24 + 30 + 10.5 * len(text), 62, 18, fill="#1b0540", outline="#3ddc84" if connected else "#ff6b6b", width=2, tags="dyn")
-        c.create_oval(36, 36, 46, 46, fill="#3ddc84" if connected else "#ff6b6b", outline="", tags="dyn")
-        c.create_text(54, 41, anchor="w", text=text, fill="#ffffff", font=("Helvetica", 13, "bold"), tags="dyn")
-
-    def _frame(self) -> None:
-        """The highlight: neon rings that glide to the chosen game."""
-        c = self.canvas
-        x0, y0, x1, y1 = self.glow
-        pulse = 2 + 2 * math.sin(self.clock * 6)
-        for k, colour, width in ((10 + pulse, "#3a0a52", 4), (6 + pulse, NEON, 4), (2, "#ffffff", 3)):
-            round_rect(c, x0 - k, y0 - k, x1 + k, y1 + k, 24, fill="", outline=colour, width=width, tags="dyn")
-
-    def _voice_bar(self, now: float) -> None:
-        """The one control and what it does right now: tap to talk, what is being heard, how loud."""
-        c = self.canvas
-        level, caption, age = self.hub.ear_state()
-        target = level or 0.0
-        self.level = max(target, getattr(self, "level", 0.0) - 0.06)  # fast up, gentle fall
-        y0, y1 = AH - 100, AH - 18
-        cy = (y0 + y1) / 2
-        live = self.mode == "listening"
-        round_rect(c, 40, y0, AW - 40, y1, 30, fill="#1b0540", outline="#ff4d6d" if live else NEON, width=3 if live else 2, tags="dyn")
-        mx = 100  # the mic: a halo that grows with your voice
-        halo = 26 + 16 * self.level
-        if level is not None:
-            c.create_oval(mx - halo, cy - halo, mx + halo, cy + halo, fill="", outline="#ff4d6d" if live else "#4dffb0", width=3, tags="dyn")
-        c.create_oval(mx - 26, cy - 26, mx + 26, cy + 26, fill="#ff4d6d" if live else "#3a1a6a", outline="", tags="dyn")
-        draw_mic(c, mx, cy, "#ffffff", 1.2)
-        if level is not None:
-            draw_meter(c, AW - 40 - 30 - 58, cy - 6, self.level, 30)
-            c.create_text(AW - 70 - 29, cy + 22, text=f"{self.hub.radio.level_db:.0f} dB", fill="#7a6a9a", font=("Helvetica", 10, "bold"), tags="dyn")
-        else:
-            c.create_text(AW - 70, cy, anchor="e", text="mic off", fill="#ff6b6b", font=("Helvetica", 13, "bold"), tags="dyn")
-        x = 150
-        if self.mode == "listening":
-            c.create_text(x, cy - 18, anchor="w", text="LISTENING…  say what you want to play", fill="#ff8fa3", font=("Helvetica", 14, "bold"), tags="dyn")
-            if self.heard:
-                words = f"“{self.heard}”"
-            elif now - self.listen_started > 2.0 and (problem := self.hub.mic_problem()):
-                words = problem
-            elif now - self.listen_started > 2.0 and self.level < 0.1:
-                words = "…speak up, it's quiet"
-            else:
-                words = "…"
-            c.create_text(x, cy + 13, anchor="w", text=words, fill="#ffffff", font=("Helvetica", 24, "bold"), width=AW - 380, tags="dyn")
-        elif self.mode == "thinking":
-            dots = "." * (1 + int(self.clock * 4) % 3)
-            c.create_text(x, cy - 18, anchor="w", text=f"THINKING{dots}", fill="#00e5ff", font=("Helvetica", 14, "bold"), tags="dyn")
-            c.create_text(x, cy + 13, anchor="w", text=f"“{self.heard}”", fill="#ffffff", font=("Helvetica", 24, "bold"), width=AW - 380, tags="dyn")
-        elif caption and age < 2.5:  # heard, but not after a tap: show it so the mic is clearly alive
-            c.create_text(x, cy - 16, anchor="w", text="HEARD (tap first to ask for something)", fill="#9c8cff", font=("Helvetica", 12, "bold"), tags="dyn")
-            c.create_text(x, cy + 12, anchor="w", text=f"“{caption}”", fill="#cfc4ff", font=("Helvetica", 18, "bold"), width=AW - 380, tags="dyn")
-        else:
-            chip(c, x, cy - 14, "tap", "TALK   (or click here)", size=17)
-            c.create_text(x, cy + 20, anchor="w", fill="#cfc4ff", font=("Helvetica", 14, "bold"), tags="dyn",
-                          text="then say  “play sky ace”  ·  “the corn one”  ·  “play this”  ·  “recalibrate”")
-
-    def _grid(self) -> None:
-        c, horizon = self.canvas, AH * 0.6
-        for sx, sy, phase in self.stars:
-            twinkle = 0.5 + 0.5 * math.sin(self.clock * 2 + phase)
-            c.create_oval(sx, sy, sx + 2, sy + 2, fill=_mix((90, 60, 140), (255, 255, 255), twinkle), outline="", tags="dyn")
-        offset = (self.clock * 0.9) % 1.0
-        for k in range(14):
-            t = (k + offset) / 14
-            y = horizon + (AH - horizon) * t * t
-            c.create_line(0, y, AW, y, fill=_mix((255, 79, 216), (60, 10, 90), 1 - t), width=2, tags="dyn")
-        for k in range(-12, 13):
-            c.create_line(AW / 2 + k * 18, horizon, AW / 2 + k * 160, AH, fill="#8a1fa0", width=2, tags="dyn")
-
-    def _title(self) -> None:
-        c = self.canvas
-        bob = 4 * math.sin(self.clock * 2)
-        for dx, dy, colour in ((5, 5, "#3a0060"), (-2, -2, "#00e5ff"), (2, 2, "#ff2bd6"), (0, 0, "#fff6ff")):
-            c.create_text(AW / 2 + dx, 70 + dy + bob, text="OMI ARCADE", fill=colour, font=("Helvetica", 64, "bold italic"), tags="dyn")
-        c.create_text(AW / 2, 124, text="★ TAP YOUR OMI · SAY WHAT YOU WANT TO PLAY ★", fill="#ffe66d", font=("Helvetica", 16, "bold"), tags="dyn")
-
-    def _tile(self, i: int, game: tuple) -> None:
-        c = self.canvas
-        key, title, how, (top_colour, bottom_colour), icon = game
-        x0, y0, x1, y1 = self._box(i)
-        chosen = i == self.selected
-        dim = 0.0 if chosen else 0.35
-        top_rgb, bottom_rgb = (_hex(_mix(_hex(colour), (18, 0, 43), dim)) for colour in (top_colour, bottom_colour))
-        steps = 10
-        for s in range(steps):
-            round_rect(c, x0, y0 + (y1 - y0) * s / steps, x1, y1, 22,
-                       fill=_mix(top_rgb, bottom_rgb, s / (steps - 1)), outline="", tags="dyn")
-        round_rect(c, x0, y0, x1, y1, 22, fill="", outline="#ffffff" if chosen else "#2b1150", width=3, tags="dyn")
-        _icon(c, icon, x0 + 62, y0 + (y1 - y0) / 2 - 8, 42 if chosen else 34, "dyn")
-        c.create_text(x0 + 118, y0 + 30, anchor="w", text=title, fill="#1a0033", font=("Helvetica", 19, "bold italic"), tags="dyn")
-        c.create_text(x0 + 116, y0 + 28, anchor="w", text=title, fill="#ffffff", font=("Helvetica", 19, "bold italic"), tags="dyn")
-        c.create_text(x0 + 118, y0 + 62, anchor="nw", text=how, fill="#fff8e6", width=x1 - x0 - 130, font=("Helvetica", 12, "bold"), tags="dyn")
-        best = self.hub.best(key)
-        badge = "NEW!" if best is None else (f"BEST {best:.1f}s" if key == "corn" else f"BEST {int(best):,}")
-        round_rect(c, x1 - 118, y1 - 40, x1 - 14, y1 - 12, 12, fill="#1a0033", outline="", tags="dyn")
-        c.create_text(x1 - 66, y1 - 26, text=badge, fill="#ffe66d", font=("Helvetica", 12, "bold"), tags="dyn")
-        if chosen:
-            chip(c, x0 + 14, y1 - 26, "say", "PLAY THIS", size=11)
-
-    def _calibration(self) -> None:
-        c = self.canvas
-        name, big, small = WIZARD[self.step or 0]
-        sample = self.hub.latest_motion()
-        moving = sample is not None and math.sqrt(sample.gx ** 2 + sample.gy ** 2 + sample.gz ** 2) > 1.0
-        c.create_rectangle(0, 0, AW, AH, fill="#0d0221", stipple="gray75", outline="", tags="dyn")
-        round_rect(c, AW / 2 - 340, AH / 2 - 190, AW / 2 + 340, AH / 2 + 190, 30, fill="#1b0540", outline=NEON, width=4, tags="dyn")
-        c.create_text(AW / 2, AH / 2 - 150, text=f"CALIBRATING · STEP {(self.step or 0) + 1} OF {len(WIZARD)}", fill="#00e5ff", font=("Helvetica", 16, "bold"), tags="dyn")
-        for dx, colour in ((3, "#ff2bd6"), (0, "#ffffff")):
-            c.create_text(AW / 2 + dx, AH / 2 - 98 + dx, text=big, fill=colour, font=("Helvetica", 42, "bold italic"), tags="dyn")
-        c.create_text(AW / 2, AH / 2 - 50, text=small, fill="#ffe66d", font=("Helvetica", 17, "bold"), tags="dyn")
-        # the pendant as a disc that tilts the way we want
-        cx, cy = AW / 2 - 90, AH / 2 + 40
-        wobble = math.sin(self.clock * 3)
-        if name == "rest":
-            c.create_oval(cx - 34, cy - 34, cx + 34, cy + 34, fill="#e8e8f0", outline="#9c8cff", width=3, tags="dyn")
-            self._steady_badge(AW / 2 + 90, cy, moving)
-        else:
-            if name == "right":
-                tilt = 0.5 + 0.3 * wobble
-                c.create_polygon(cx - 60, cy - 30 * tilt, cx + 60, cy + 30 * tilt, cx + 60, cy + 30 * tilt + 12, cx - 60, cy - 30 * tilt + 12,
-                                 fill="#e8e8f0", outline="#9c8cff", width=3, tags="dyn")
-                c.create_text(cx + 90, cy, text="▶", fill=NEON, font=("Helvetica", 30, "bold"), tags="dyn")
-            else:
-                squash = 0.5 + 0.3 * wobble
-                c.create_oval(cx - 60, cy - 30 * squash, cx + 60, cy + 30 * squash, fill="#e8e8f0", outline="#9c8cff", width=3, tags="dyn")
-                c.create_text(cx, cy - 56, text="▲", fill=NEON, font=("Helvetica", 30, "bold"), tags="dyn")
-            degrees = self._step_degrees()
-            if degrees is not None:  # live meter: fills up to "far enough"
-                ok = degrees >= MIN_TILT_DEG
-                bx, by, bw = AW / 2 + 20, cy - 8, 190
-                c.create_rectangle(bx, by, bx + bw, by + 16, outline="#9c8cff", width=2, tags="dyn")
-                c.create_rectangle(bx, by, bx + bw * min(1.0, degrees / (MIN_TILT_DEG * 2)), by + 16,
-                                   fill="#3ddc84" if ok else "#ffb020", outline="", tags="dyn")
-                c.create_line(bx + bw / 2, by - 5, bx + bw / 2, by + 21, fill="#ffffff", width=2, tags="dyn")
-                c.create_text(bx + bw / 2, by + 36, text=f"{degrees:.0f}°  {'✓ now tap' if ok else 'tip further'}",
-                              fill="#3ddc84" if ok else "#ffb020", font=("Helvetica", 15, "bold"), tags="dyn")
-        draw_legend(c, AW / 2, AH / 2 + 140, (("tap", "LOCK IT IN"), ("double", "SKIP")), size=17)
-
-    def _steady_badge(self, x: float, y: float, moving: bool) -> None:
-        text, colour = ("moving…", "#ffb020") if moving else ("steady ✓", "#3ddc84")
-        self.canvas.create_text(x, y, text=text, fill=colour, font=("Helvetica", 16, "bold"), tags="dyn")
-
-    def close(self) -> None:
-        self.top.after_cancel(self._job)
-        self.top.destroy()
-        self.hub.window_closed(self)
-
-    def lift(self) -> None:
-        self.top.deiconify()
-        self.top.lift()
-        self.top.focus_force()
 
 
 class MiniGameWindow:
@@ -585,6 +72,7 @@ class MiniGameWindow:
         self.maze_level = 0
         self.top.bind("<KeyPress>", self._key_down)
         self.top.bind("<KeyRelease>", lambda e: self.keys.discard(e.keysym.lower()))
+        self.canvas.bind("<Button-1>", lambda _e: self._pointer())
         self.top.protocol("WM_DELETE_WINDOW", self.close)
         self.new_game()
         self.top.focus_force()
@@ -636,17 +124,25 @@ class MiniGameWindow:
     def _key_down(self, event: tk.Event) -> None:
         key = event.keysym.lower()
         self.keys.add(key)
+        self.hub.note_device("keys")
+        # Arrows and WASD only steer. Space and Enter are the button, so holding W does not brake or fire.
         if key in ("space", "return"):
             self.on_tap("single")
+        elif key == "x" and self.state == "playing":
+            self.on_tap("double")
         elif key == "escape":
             self.on_hold() if self.state == "playing" else self.on_tap("double")
-        elif key == "b":
+        elif key == "b" and self.state == "playing":
             self.on_shake()
         elif key == "c":
             self.hub.recentre()
 
+    def _pointer(self) -> None:
+        self.hub.note_device("keys")
+        self.on_tap("single")
+
     def _stick(self) -> tuple[float, float, str]:
-        pendant = self.hub.stick()
+        pendant = self.hub.play_axes()
         if pendant is not None:
             return pendant
         x = (1.0 if self.keys & {"right", "d"} else 0.0) - (1.0 if self.keys & {"left", "a"} else 0.0)
@@ -676,7 +172,8 @@ class MiniGameWindow:
     def _hud(self, label: str) -> None:
         c = self.canvas
         c.create_rectangle(0, H - 34, W, H, fill="#070b18", outline="", tags="dyn")
-        draw_legend(c, W / 2, H - 17, legend(self.name, motion=label != "keys"), size=12, max_width=W - 24)
+        device = self.hub.active_device()
+        draw_legend(c, W / 2, H - 17, legend(self.name, device=device, motion=device == "omi" and label != "keys"), size=12, max_width=W - 24)
         draw_ear(c, W - 10, H - 52, *self.hub.ear_state())
         colours = {"ready": "#ffd23f", "paused": "#7fd4ff", "over": "#ff6b5b"}
         if self.state not in colours:
@@ -693,7 +190,7 @@ class MiniGameWindow:
             c.create_text(W / 2 + dx, H / 2 - 50 + dx, text=title, fill=col, font=("Helvetica", 40, "bold italic"), tags="dyn")
         if sub:
             c.create_text(W / 2, H / 2 + 2, text=sub, fill="#e8e8ff", font=("Helvetica", 15, "bold"), tags="dyn")
-        draw_legend(c, W / 2, H / 2 + 46, legend(self.name, self.state), size=18)
+        draw_legend(c, W / 2, H / 2 + 46, legend(self.name, self.state, device=self.hub.active_device()), size=18)
 
     # --- Corn Maze ------------------------------------------------------------------------
 
@@ -789,7 +286,7 @@ class MiniGameWindow:
             c.create_text(W / 2, H / 2 - 44, text="HOME TO THE BARN!", fill="#c0282d", font=("Helvetica", 32, "bold italic"), tags="dyn")
             c.create_text(W / 2, H / 2 - 4, text=f"level {g.level} in {g.elapsed:.1f} s", fill="#5c3a18", font=("Helvetica", 16, "bold"), tags="dyn")
             round_rect(c, W / 2 - 275, H / 2 + 22, W / 2 + 275, H / 2 + 66, 20, fill="#12002b", outline="", tags="dyn")
-            draw_legend(c, W / 2, H / 2 + 44, legend("corn", "won"), size=16)
+            draw_legend(c, W / 2, H / 2 + 44, legend("corn", "won", device=self.hub.active_device()), size=16)
         else:
             self.recorded = False
 
@@ -856,3 +353,7 @@ class MiniGameWindow:
         self.top.after_cancel(self._job)
         self.top.destroy()
         self.on_close()
+
+
+# The home screen lives in hub_view. Re-exported so `from sideband.arcade import ArcadeWindow` keeps working.
+from sideband.hub_view import ArcadeWindow  # noqa: E402

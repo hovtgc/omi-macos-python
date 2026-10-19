@@ -17,6 +17,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
 
+from sideband.platform import spoken_aliases
 from sideband.protocol import PCM_RATE_HZ
 
 COMMANDS = ("left", "right", "up", "down", "stop", "exit", "quit")  # exit / quit leave Voice Flap
@@ -53,11 +54,11 @@ MENU_WORDS = [
     "open", "play", "show", "start", "stop", "close", "cancel", "home", "launcher", "the",
     "recording", "record", "transcriber", "controls", "arcade", "bluetooth",
     "voice", "flap", "marble", "maze", "corn", "star", "dodger", "catch", "fighter", "ace", "plane", "sky",
+    "beat", "rhythm", "dash", "runner", "simon", "memory", "quickdraw", "draw", "reaction", "settings",
     "summarize", "summarise", "summary", "that", "last", "latest", "[unk]",
 ]
 APPS = {"transcriber": "transcriber", "controls": "controls", "arcade": "arcade", "bluetooth": "bluetooth"}
-GAMES = {"marble": "corn", "maze": "corn", "corn": "corn", "star": "dodger", "dodger": "dodger", "catch": "catch", "flap": "flap",
-         "fighter": "fighter", "ace": "fighter", "plane": "fighter", "sky": "fighter"}
+GAMES = spoken_aliases()
 
 
 def menu_command(text: str) -> str | None:

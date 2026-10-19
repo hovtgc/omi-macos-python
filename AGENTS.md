@@ -15,7 +15,7 @@ This stays a Python application. Do not rewrite it in Swift, JavaScript, or as a
 
 ## Product
 
-Thought Map first: tap to talk (or type), Whisper transcribes on the Mac, the assistant files each thought into folders 2 to 3 levels deep, matures growing folders into a next action, writes summaries and action items and answers questions. The assistant is MLX on the Mac by default, or any OpenAI-compatible server (`llm.Backend`). Then Controls (taps → Mac actions), a voice menu, the Arcade, and a Bluetooth tool. It also holds the pendant's link in the background, which the official phone app drops when it leaves the foreground. Nothing is uploaded. There is no account.
+The home screen is the arcade: a local game shelf (keyboard and mouse first, Omi pendant and gamepads as extra controllers). Sky Ace 1943, Omi Flap 3D, Corn Maze, Star Dodger, Omi Catch, Voice Flap, plus one-button games that need no tilt. Scores stay in `arcade.json` on the Mac. Thought Map, Controls, Bluetooth, AI settings and status are still in the app, behind the gear on the shelf. The assistant is MLX on the Mac by default, or any OpenAI-compatible server (`llm.Backend`). The app also holds the pendant's link in the background, which the official phone app drops when it leaves the foreground. Nothing is uploaded. There is no account.
 
 USB does not carry audio. Do not add a USB transport.
 

@@ -31,7 +31,7 @@ VERBS = (
 STOP_PHRASES = ("that's all", "thats all", "stop listening", "go to sleep", "goodbye", "good bye", "never mind", "nevermind")
 PLACES = {"thoughts": "thoughts", "thought": "thoughts", "map": "thoughts", "notes": "thoughts", "inbox": "inbox",
           "arcade": "arcade", "games": "arcade", "controls": "controls", "buttons": "controls",
-          "pendant": "pendant", "bluetooth": "pendant", "omi": "pendant", "home": "thoughts"}
+          "pendant": "pendant", "bluetooth": "pendant", "omi": "pendant", "home": "arcade"}
 
 
 @dataclass
