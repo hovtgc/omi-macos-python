@@ -15,7 +15,10 @@ from typing import Any
 
 from sideband.desert import MISSIONS, Orders, Raid
 from sideband.sfx import blip
-from sideband.stage import Session, glow, haze, label, lock, paint, sand_image, sky_image, stick, sun, toggle_fullscreen
+from sideband.stage import (
+    Session, cloth_image, concrete_image, glow, grade, haze, label, lock, paint,
+    sand_image, sky_image, stick, sun, toggle_fullscreen, vignette,
+)
 
 CELL = 4.0
 EYE = 1.68
@@ -47,6 +50,7 @@ class DesertSession(Session):
         self._bodies: dict[int, Any] = {}
         self._prev: dict[int, tuple[float, float]] = {}
         self._flames: list[Any] = []
+        self._motes: list[Any] = []
         self._rifle: Any = None
         self._flash: Any = None
         self._texts: dict[str, Any] = {}
@@ -105,15 +109,19 @@ class DesertSession(Session):
         camera.clip_plane_near = 0.06
         camera.clip_plane_far = 240
         sand = paint("sand", sand_image())
+        # The sky dome shows about the lower half of this gradient in front of the camera.
         sky = paint("desert-sky", sky_image([
-            (0.0, (92, 132, 168)),
-            (0.35, (214, 126, 64)),
-            (0.62, (232, 156, 78)),
-            (1.0, (196, 112, 58)),
+            (0.0, (52, 92, 150)),
+            (0.72, (96, 146, 196)),
+            (0.86, (214, 132, 72)),
+            (1.0, (196, 114, 64)),
         ]))
-        haze((214, 132, 72), 18, 95, 200)
-        self.own(Sky(texture=sky, color=color.white, unlit=True))
-        self.own(Entity(model="sphere", color=color.rgba32(255, 214, 140, 255), position=(70, 28, 18), scale=7, shader=unlit_shader, unlit=True))
+        haze((214, 132, 72), 28, 110, 180)
+        dome = self.own(Sky(texture=sky, color=color.white, unlit=True))
+        try:
+            dome.setFogOff()
+        except Exception:
+            pass
         ground = self.own(Entity(
             model="plane", texture=sand, texture_scale=(18, 14), shader=lit,
             position=(8 * CELL, 0, 6 * CELL), scale=(96, 1, 72),
@@ -123,14 +131,17 @@ class DesertSession(Session):
         self._blocks(lit, Cylinder)
         self._actors(lit, Cylinder)
         self._pickups(lit)
-        light, fill = sun(shadows=True, rotation=(28, -42, 0))
+        light, fill = sun(warm=(255, 214, 160), ambient=(120, 96, 74), shadows=True, rotation=(26, -38, 0))
         self.own(light)
         self.own(fill)
         haze((214, 132, 72), 18, 95, 200)
         self._viewmodel(lit, unlit_shader)
         self._hud()
+        self._dust(unlit_shader)
         self.light_owned()
         self._place_camera()
+        grade("desert")
+        vignette(self)
         del ground
 
     def _dunes(self, lit: Any, sand: Any) -> None:
@@ -152,7 +163,8 @@ class DesertSession(Session):
         sand_tex = paint("sand", sand_image())
         sand = color.rgba32(210, 170, 110, 255)
         bag = color.rgba32(168, 132, 78, 255)
-        concrete = color.rgba32(122, 112, 98, 255)
+        concrete = color.rgba32(168, 160, 148, 255)
+        concrete_tex = paint("concrete", concrete_image())
         for iy, row in enumerate(self.raid.grid):
             for ix, cell in enumerate(row):
                 x, z = (ix + 0.5) * CELL, (iy + 0.5) * CELL
@@ -168,8 +180,12 @@ class DesertSession(Session):
                             scale=(1.2, 0.36, 0.62), rotation=(0, rng.uniform(-8, 8), 0),
                         ))
                 elif cell == "B":
-                    self.own(Entity(model="cube", shader=lit, position=(x, 1.7, z), scale=(3.8, 3.4, 3.8), color=concrete))
-                    self.own(Entity(model="cube", shader=lit, position=(x, 2.5, z - 1.7), scale=(1.6, 0.28, 0.2), color=color.rgba32(24, 22, 20, 255)))
+                    self.own(Entity(
+                        model="cube", shader=lit, texture=concrete_tex, texture_scale=(2, 2),
+                        position=(x, 1.7, z), scale=(3.8, 3.4, 3.8), color=concrete,
+                    ))
+                    self.own(Entity(model="cube", shader=lit, position=(x, 3.5, z), scale=(4.1, 0.22, 4.1), color=color.rgba32(96, 92, 84, 255)))
+                    self.own(Entity(model="cube", shader=lit, position=(x, 2.2, z - 1.92), scale=(1.3, 0.7, 0.12), color=color.rgba32(18, 16, 14, 255)))
                 elif cell == "F":
                     self._well(x, z, lit, cylinder)
         # A burnt-out truck, scenery only. It is not a person and it does not shoot.
@@ -212,14 +228,20 @@ class DesertSession(Session):
     def _soldier(self, lit: Any) -> Any:
         from ursina import Entity, color
 
-        olive = color.rgba32(92, 96, 62, 255)
+        olive = color.rgba32(150, 156, 110, 255)
+        weave = paint("cloth", cloth_image())
         root = self.own(Entity())
-        torso = Entity(parent=root, model="cube", shader=lit, color=olive, scale=(0.46, 0.58, 0.28), y=1.18)
+        torso = Entity(parent=root, model="cube", shader=lit, texture=weave, color=olive, scale=(0.46, 0.62, 0.28), y=1.16)
         Entity(parent=root, model="sphere", shader=lit, color=color.rgba32(186, 142, 102, 255), scale=0.22, y=1.58)
-        Entity(parent=root, model="sphere", shader=lit, color=color.rgba32(72, 78, 52, 255), scale=(0.26, 0.14, 0.26), y=1.68)
-        left = Entity(parent=root, model="cube", shader=lit, color=olive, scale=(0.14, 0.62, 0.14), position=(-0.12, 0.48, 0.02))
-        right = Entity(parent=root, model="cube", shader=lit, color=olive, scale=(0.14, 0.62, 0.14), position=(0.12, 0.48, -0.02))
-        Entity(parent=root, model="cube", shader=lit, color=color.rgba32(28, 26, 24, 255), scale=(0.08, 0.08, 0.72), position=(0.22, 1.12, 0.28))
+        Entity(parent=root, model="sphere", shader=lit, color=color.rgba32(72, 78, 52, 255), scale=(0.28, 0.16, 0.28), y=1.7)
+        Entity(parent=root, model="cube", shader=lit, texture=weave, color=olive, scale=(0.48, 0.16, 0.22), position=(0, 1.32, 0))
+        Entity(parent=root, model="cube", shader=lit, color=color.rgba32(62, 56, 44, 255), scale=(0.28, 0.34, 0.16), position=(0, 1.22, -0.16))
+        left = Entity(parent=root, model="cube", shader=lit, texture=weave, color=olive, scale=(0.14, 0.62, 0.16), position=(-0.14, 0.46, 0.02))
+        right = Entity(parent=root, model="cube", shader=lit, texture=weave, color=olive, scale=(0.14, 0.62, 0.16), position=(0.14, 0.46, -0.02))
+        Entity(parent=root, model="cube", shader=lit, color=color.rgba32(42, 36, 28, 255), scale=(0.16, 0.1, 0.22), position=(-0.14, 0.12, 0.04))
+        Entity(parent=root, model="cube", shader=lit, color=color.rgba32(42, 36, 28, 255), scale=(0.16, 0.1, 0.22), position=(0.14, 0.12, 0))
+        Entity(parent=root, model="cube", shader=lit, color=color.rgba32(28, 26, 24, 255), scale=(0.06, 0.06, 0.86), position=(0.24, 1.14, 0.32))
+        Entity(parent=root, model="cube", shader=lit, color=color.rgba32(36, 34, 30, 255), scale=(0.08, 0.1, 0.16), position=(0.24, 1.1, 0.02))
         root._torso = torso
         root._legs = (left, right)
         root._olive = olive
@@ -260,6 +282,20 @@ class DesertSession(Session):
             ))
             self._crates[id(item)] = crate
 
+    def _dust(self, unlit: Any) -> None:
+        from ursina import Entity, color
+
+        rng = random.Random(4)
+        self._motes = []
+        for i in range(32):
+            mote = self.own(Entity(
+                model="sphere", shader=unlit, unlit=True,
+                scale=rng.uniform(0.04, 0.12),
+                color=color.rgba32(220, 190, 140, 70),
+            ))
+            mote._p = (rng.uniform(-6, 70), rng.uniform(0.3, 4.2), rng.uniform(-8, 56), rng.random() * 6.28, i)
+            self._motes.append(mote)
+
     def _viewmodel(self, lit: Any, unlit: Any) -> None:
         from ursina import Entity, camera, color
 
@@ -283,6 +319,7 @@ class DesertSession(Session):
         self._texts["sub"] = self.own(label("", (-0.5, -0.02), 1.3))
         self.own(Entity(parent=camera.ui, model="quad", color=color.rgba32(255, 248, 236, 220), scale=(0.003, 0.018), position=(0, 0)))
         self.own(Entity(parent=camera.ui, model="quad", color=color.rgba32(255, 248, 236, 220), scale=(0.018, 0.003), position=(0, 0)))
+        self._motes = []
         self._marks = []
         for px, py, sx, sy in ((0.02, 0.02, 0.012, 0.003), (-0.02, 0.02, 0.012, 0.003), (0.02, -0.02, 0.012, 0.003), (-0.02, -0.02, 0.012, 0.003)):
             mark = self.own(Entity(parent=camera.ui, model="quad", color=color.rgba32(255, 196, 96, 0), scale=(sx, sy), position=(px, py), rotation=(0, 0, 45)))
@@ -357,13 +394,24 @@ class DesertSession(Session):
         forward, strafe = stick()[1], stick()[0]
         turn = 0.0
         if self.look and self._skip_look <= 0:
-            from ursina import mouse
+            from sideband.keys import BOARD
 
-            if mouse.locked:
-                turn -= mouse.velocity[0] * YAW
-                self.pitch = max(-32.0, min(36.0, self.pitch - mouse.velocity[1] * PITCH))
-                if abs(mouse.velocity[0]) + abs(mouse.velocity[1]) > 0.001:
-                    self.hub.note_device("keys")
+            dx, dy = BOARD.look
+            if abs(dx) + abs(dy) > 0.2:
+                turn -= dx * 0.0045
+                self.pitch = max(-32.0, min(36.0, self.pitch - dy * 0.32))
+                self.hub.note_device("keys")
+            else:
+                try:
+                    from ursina import mouse
+
+                    if mouse.locked:
+                        turn -= mouse.velocity[0] * YAW
+                        self.pitch = max(-32.0, min(36.0, self.pitch - mouse.velocity[1] * PITCH))
+                        if abs(mouse.velocity[0]) + abs(mouse.velocity[1]) > 0.001:
+                            self.hub.note_device("keys")
+                except Exception:
+                    pass
         else:
             self._skip_look = max(0, self._skip_look - 1)
         axes = self.hub.play_axes()
@@ -391,6 +439,14 @@ class DesertSession(Session):
                 t = puff._age
                 puff.position = (x + math.sin(t * 4) * 0.8, 3.2 + t * 16, z + math.cos(t * 3) * 0.6)
                 puff.scale = 0.7 + t * 5.5
+        clock = self.raid.time
+        for mote in self._motes:
+            x, y, z, phase, index = mote._p
+            mote.position = (
+                x + math.sin(clock * 0.35 + phase) * 1.4,
+                y + math.sin(clock * 0.8 + index) * 0.25,
+                z + clock * 0.15 % 8,
+            )
 
     def _sync(self) -> None:
         from ursina import color

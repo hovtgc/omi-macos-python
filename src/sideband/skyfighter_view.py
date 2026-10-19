@@ -67,7 +67,12 @@ class FighterWindow:
         self.top.bind("<KeyRelease>", lambda e: self.keys.discard(e.keysym.lower()))
         self.canvas.bind("<Button-1>", lambda _e: self._pointer())
         self.top.protocol("WM_DELETE_WINDOW", self.close)
-        self.top.focus_force()
+        from sideband.keys import attach, focus
+
+        attach(self.top)
+        attach(self.canvas)
+        focus(self.top)
+        self._input_line = ""
         self._last = time.monotonic()
         self._tick()
 
@@ -139,6 +144,9 @@ class FighterWindow:
 
     def _tick(self) -> None:
         self._job = self.top.after(FRAME_MS, self._tick)
+        from sideband.keys import flush_widget
+
+        self._input_line = flush_widget(self.top, self.keys, self.canvas)
         now = time.monotonic()
         dt = min(0.05, now - self._last)
         self._last = now
@@ -166,6 +174,9 @@ class FighterWindow:
             if cloud[2] < g.z - 10:
                 cloud[:] = self._cloud(FAR * 0.9)
         self._draw()
+        from sideband.keys import stamp
+
+        stamp(self.canvas, 12, 16, getattr(self, "_input_line", ""))
 
     def _cloud(self, ahead: float) -> list[float]:
         return [self.rng.uniform(-150, 150), self.rng.uniform(20, 90), self.game.z + ahead, self.rng.uniform(8, 22)]

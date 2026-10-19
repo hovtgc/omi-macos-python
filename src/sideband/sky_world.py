@@ -14,7 +14,10 @@ from typing import Any
 from sideband.minigames import Stick
 from sideband.sfx import blip
 from sideband.skyfighter import Dogfight
-from sideband.stage import Session, aim, haze, label, paint, sand_image, sky_image, stick, sun, toggle_fullscreen
+from sideband.stage import (
+    Session, aim, alloy_image, cloud_image, grade, haze, label, paint, sand_image, sky_image, stick, sun,
+    toggle_fullscreen, vignette,
+)
 
 
 class SkySession(Session):
@@ -74,37 +77,77 @@ class SkySession(Session):
         camera.clip_plane_far = 420
         camera.clip_plane_near = 0.2
         sky = paint("ace-sky", sky_image([
-            (0.0, (64, 104, 168)),
-            (0.45, (242, 168, 96)),
-            (0.75, (255, 196, 120)),
-            (1.0, (212, 140, 78)),
+            (0.0, (36, 78, 160)),
+            (0.9, (92, 150, 206)),
+            (0.96, (236, 168, 96)),
+            (1.0, (204, 132, 72)),
         ]))
-        haze((232, 170, 110), 40, 280, 160)
-        self.own(Sky(texture=sky, color=color.white, unlit=True))
+        haze((232, 176, 120), 80, 360, 150)
+        dome = self.own(Sky(texture=sky, color=color.white, unlit=True))
         from ursina.shaders import unlit_shader
 
-        self.own(Entity(model="sphere", shader=unlit_shader, unlit=True, color=color.rgba32(255, 220, 160, 255), position=(80, 40, 200), scale=14))
+        try:
+            dome.setFogOff()
+        except Exception:
+            pass
         sand = paint("sand", sand_image())
-        self._ground = self.own(Entity(model="plane", texture=sand, texture_scale=(24, 24), shader=lit, scale=(500, 1, 500), color=color.rgba32(196, 150, 96, 255)))
-        light, fill = sun(warm=(255, 196, 140), ambient=(90, 80, 70), shadows=False, rotation=(22, -30, 0))
+        self._ground = self.own(Entity(model="plane", texture=sand, texture_scale=(24, 24), shader=lit, scale=(500, 1, 500), color=color.rgba32(210, 168, 112, 255)))
+        light, fill = sun(warm=(255, 210, 160), ambient=(130, 118, 108), shadows=True, rotation=(18, -36, 0))
         self.own(light)
         self.own(fill)
-        haze((232, 170, 110), 40, 280, 160)
-        self._plane = self._fighter(lit, (210, 214, 220), (196, 150, 48), (40, 70, 120))
+        haze((232, 176, 120), 50, 320, 180)
+        self._plane = self._fighter(lit, (188, 196, 206), (176, 132, 48), (36, 64, 112))
+        self._clouds(unlit_shader)
         self.light_owned()
+        grade("sky")
+        vignette(self)
         self._texts["hud"] = self.own(label("SKY ACE 1943", (-0.86, 0.46), 1.7))
         self._texts["sub"] = self.own(label("Arrows fly. Space fires. B rolls. Esc pauses.", (-0.86, 0.39), 1.2))
         self._texts["center"] = self.own(label("", (-0.4, 0.06), 2.0))
 
+    def _clouds(self, unlit: Any) -> None:
+        from ursina import Entity, color
+
+        puff = paint("cloud", cloud_image())
+        self._cloud_bits = []
+        rng = random.Random(19)
+        for _i in range(10):
+            bit = self.own(Entity(
+                model="quad", texture=puff, shader=unlit, unlit=True, double_sided=True,
+                color=color.rgba(1, 0.97, 0.92, 0.55),
+                position=(rng.choice((-1, 1)) * rng.uniform(36, 170), rng.uniform(36, 64), rng.uniform(50, 240)),
+                scale=rng.uniform(14, 28),
+                rotation=(12, rng.uniform(0, 180), 0),
+            ))
+            bit._unlit = True
+            bit._band = bit.z
+            self._cloud_bits.append(bit)
+
+    def _drift_clouds(self, z: float) -> None:
+        for bit in getattr(self, "_cloud_bits", ()):
+            if bit.z < z - 30:
+                bit.z += 280
+
     def _fighter(self, lit: Any, body: tuple[int, int, int], nose: tuple[int, int, int], wing: tuple[int, int, int], scale: float = 1.0) -> Any:
         from ursina import Entity, color
 
+        metal = paint("alloy", alloy_image())
         root = self.own(Entity(scale=scale))
-        Entity(parent=root, model="cube", shader=lit, color=color.rgba32(*body, 255), scale=(0.7, 0.55, 3.2), position=(0, 0, 0.2))
-        Entity(parent=root, model="cube", shader=lit, color=color.rgba32(*nose, 255), scale=(0.45, 0.4, 0.8), position=(0, 0, 1.8))
-        Entity(parent=root, model="cube", shader=lit, color=color.rgba32(*wing, 255), scale=(6.4, 0.08, 1.1), position=(0, 0.05, 0.2))
-        Entity(parent=root, model="cube", shader=lit, color=color.rgba32(*body, 255), scale=(0.12, 0.9, 0.7), position=(0, 0.55, -1.2))
-        Entity(parent=root, model="cube", shader=lit, color=color.rgba32(*wing, 255), scale=(2.2, 0.06, 0.45), position=(0, 0.9, -1.3))
+        Entity(parent=root, model="cube", shader=lit, texture=metal, color=color.rgba32(*body, 255), scale=(0.72, 0.58, 3.4), position=(0, 0, 0.15))
+        Entity(parent=root, model="cube", shader=lit, texture=metal, color=color.rgba32(*nose, 255), scale=(0.42, 0.36, 0.9), position=(0, 0, 1.85))
+        Entity(parent=root, model="cube", shader=lit, texture=metal, color=color.rgba32(*wing, 255), scale=(6.6, 0.07, 1.15), position=(0, 0.02, 0.15))
+        Entity(parent=root, model="cube", shader=lit, color=color.rgba32(180, 40, 36, 255), scale=(0.55, 0.06, 0.55), position=(-2.2, 0.08, 0.15))
+        Entity(parent=root, model="cube", shader=lit, color=color.rgba32(180, 40, 36, 255), scale=(0.55, 0.06, 0.55), position=(2.2, 0.08, 0.15))
+        Entity(parent=root, model="cube", shader=lit, texture=metal, color=color.rgba32(*body, 255), scale=(0.1, 1.05, 0.72), position=(0, 0.62, -1.25))
+        Entity(parent=root, model="cube", shader=lit, color=color.rgba32(*wing, 255), scale=(2.4, 0.05, 0.5), position=(0, 1.05, -1.35))
+        from ursina.shaders import unlit_shader
+
+        canopy = Entity(parent=root, model="sphere", shader=unlit_shader, unlit=True, color=color.rgba32(150, 196, 210, 160), scale=(0.46, 0.28, 0.9), position=(0, 0.34, 0.2))
+        canopy._unlit = True
+        prop = Entity(parent=root, position=(0, 0, 2.35))
+        Entity(parent=prop, model="cube", shader=lit, color=color.rgba32(36, 38, 42, 255), scale=(1.85, 0.08, 0.06))
+        Entity(parent=prop, model="cube", shader=lit, color=color.rgba32(36, 38, 42, 255), scale=(0.08, 1.85, 0.06))
+        root._prop = prop
         from sideband.stage import shade_tree
 
         shade_tree(root)
@@ -134,6 +177,10 @@ class SkySession(Session):
         if self._plane is not None:
             self._plane.position = (g.x, g.y, g.z)
             self._plane.rotation = (math.degrees(g.pitch), 0, -math.degrees(g.bank))
+            prop = getattr(self._plane, "_prop", None)
+            if prop is not None:
+                prop.rotation_z += dt * 1600
+        self._drift_clouds(g.z)
         if self._ground is not None:
             self._ground.position = (0, 0, g.z)
         self._sync_enemies(lit)

@@ -83,10 +83,16 @@ class Session:
             pass
 
     def fresh(self) -> set[str]:
-        from ursina import held_keys
+        from sideband.keys import BOARD, ursina_names
 
-        now = {name for name, down in held_keys.items() if down}
-        pressed = now - self._held
+        try:
+            from ursina import held_keys
+
+            ursina_down = {name for name, down in held_keys.items() if down}
+        except Exception:
+            ursina_down = set()
+        now = ursina_down | ursina_names(set(BOARD.held))
+        pressed = (now - self._held) | ursina_names(set(BOARD.pressed))
         self._held = now
         return pressed
 
@@ -151,7 +157,11 @@ def play(hub: Any, session: Session) -> None:
         session.finish()
         _session = None
         return
+    from sideband import keys
+
+    keys.activate()
     _show(session.title)
+    debug_label = None
     arcade = getattr(hub, "arcade", None)
     if arcade is not None:
         try:
@@ -160,20 +170,35 @@ def play(hub: Any, session: Session) -> None:
             pass
     try:
         session.build()
+        try:
+            app.step()  # apply the title and size before asking macOS for the key window
+        except Exception:
+            pass
+        keys.activate()
+        debug_label = _debug_label()
+        if debug_label is not None:
+            session.own(debug_label)
         while not session.done:
             app.step()
-            import time
+            from ursina import time as ursina_time
 
-            dt = float(getattr(time, "dt", 1 / 60) or 1 / 60)
+            dt = float(getattr(ursina_time, "dt", 0) or 1 / 60)
             _pump(hub, session)
             if session.done:
                 break
+            keys.BOARD.poll()
+            if debug_label is not None:
+                debug_label.text = keys.BOARD.overlay()
+                debug_label.enabled = keys.BOARD.debug
             session.frame(max(0.0, min(0.05, dt)))
+            keys.BOARD.end_frame()
     except Exception as exc:
         hub.log(f"{session.title}: {exc}")
         session.done = True
     finally:
         _unlock()
+        keys.BOARD.release_pointer()
+        _clear_grade()
         try:
             session.teardown()
         except Exception:
@@ -184,24 +209,40 @@ def play(hub: Any, session: Session) -> None:
 
 
 def stick() -> tuple[float, float]:
-    """Arrow keys and WASD as (x right, y up), each axis in -1..1."""
-    from ursina import held_keys
+    """Arrow keys and WASD as (x right, y up), each axis in -1..1.
 
-    x = float(bool(held_keys["d"] or held_keys["right arrow"])) - float(bool(held_keys["a"] or held_keys["left arrow"]))
-    y = float(bool(held_keys["w"] or held_keys["up arrow"])) - float(bool(held_keys["s"] or held_keys["down arrow"]))
-    return x, y
+    The Mac HID board wins when it sees the key. Ursina's own table is the other path.
+    """
+    from sideband.keys import BOARD
+
+    try:
+        from ursina import held_keys
+    except Exception:
+        held_keys = {}
+
+    def axis(neg: tuple[str, ...], pos: tuple[str, ...]) -> float:
+        down_neg = BOARD.down(*neg) or any(bool(held_keys[name]) for name in neg if name in held_keys)
+        down_pos = BOARD.down(*pos) or any(bool(held_keys[name]) for name in pos if name in held_keys)
+        return float(down_pos) - float(down_neg)
+
+    return axis(("a", "left", "left arrow"), ("d", "right", "right arrow")), axis(("s", "down", "down arrow"), ("w", "up", "up arrow"))
 
 
 def aim(keys: tuple[float, float]) -> tuple[float, float]:
     """Keys win on an axis. A mouse that has left the middle fills an axis they are not holding."""
     x, y = keys
+    px, py = 0.0, 0.0
     try:
         from ursina import mouse
 
         px = max(-1.0, min(1.0, float(mouse.position[0]) * 2.4))
         py = max(-1.0, min(1.0, float(mouse.position[1]) * 2.4))
     except Exception:
-        return x, y
+        pass
+    if abs(px) < 0.12 and abs(py) < 0.12:
+        cursor = _cursor_axes()
+        if cursor is not None:
+            px, py = cursor
     if abs(x) < 0.05 and abs(px) > 0.12:
         x = px
     if abs(y) < 0.05 and abs(py) > 0.12:
@@ -209,10 +250,44 @@ def aim(keys: tuple[float, float]) -> tuple[float, float]:
     return x, y
 
 
-def lock(on: bool) -> None:
-    from ursina import mouse
+def _cursor_axes() -> tuple[float, float] | None:
+    """Cursor offset from the Panda window, -1..1. None when there is no Mac poll."""
+    from sideband.keys import _coregraphics, _cursor
 
-    mouse.locked = bool(on)
+    cg = _coregraphics()
+    if cg is None:
+        return None
+    point = _cursor(cg)
+    if point is None:
+        return None
+    try:
+        from ursina import application
+
+        props = application.base.win.getProperties()
+        width, height = props.getXSize(), props.getYSize()
+        origin_x, origin_y = props.getXOrigin(), props.getYOrigin()
+    except Exception:
+        return None
+    if width < 20 or height < 20:
+        return None
+    local_x = (point[0] - origin_x) / width * 2 - 1
+    local_y = 1 - (point[1] - origin_y) / height * 2
+    return max(-1.0, min(1.0, local_x * 1.35)), max(-1.0, min(1.0, local_y * 1.35))
+
+
+def lock(on: bool) -> None:
+    from sideband.keys import BOARD
+
+    try:
+        from ursina import mouse
+
+        mouse.locked = bool(on)
+    except Exception:
+        pass
+    if on:
+        BOARD.arm_pointer()
+    else:
+        BOARD.release_pointer()
 
 
 def _unlock() -> None:
@@ -256,6 +331,77 @@ def sand_image():
                 max(0, min(255, 154 + grain // 2 + dune // 2)),
                 max(0, min(255, 92 + grain // 3)),
             )
+    return image
+
+
+def concrete_image():
+    """Poured concrete with form seams. Generated, not a photo."""
+    import random
+    from PIL import Image
+
+    rng = random.Random(7)
+    image = Image.new("RGB", (128, 128))
+    pixels = image.load()
+    for y in range(128):
+        for x in range(128):
+            grain = rng.randint(-20, 14)
+            seam = 32 if x % 64 < 2 or y % 64 < 2 else 0
+            pixels[x, y] = (
+                max(0, 124 + grain - seam),
+                max(0, 116 + grain - seam),
+                max(0, 104 + grain - seam),
+            )
+    return image
+
+
+def cloth_image():
+    """Olive weave for uniforms."""
+    import random
+    from PIL import Image
+
+    rng = random.Random(11)
+    image = Image.new("RGB", (64, 64))
+    pixels = image.load()
+    for y in range(64):
+        for x in range(64):
+            weave = 10 if (x // 2 + y // 2) % 2 == 0 else -6
+            grain = rng.randint(-8, 8)
+            pixels[x, y] = (max(0, 78 + weave + grain), max(0, 84 + weave + grain), max(0, 52 + grain))
+    return image
+
+
+def alloy_image():
+    """Brushed aluminium for the fighter."""
+    import math
+    import random
+    from PIL import Image
+
+    rng = random.Random(43)
+    image = Image.new("RGB", (128, 64))
+    pixels = image.load()
+    for y in range(64):
+        band = int(18 * math.sin(y / 3.5))
+        for x in range(128):
+            grain = rng.randint(-8, 8)
+            shade = 168 + band + grain
+            pixels[x, y] = (shade, shade + 2, shade + 8)
+    return image
+
+
+def cloud_image():
+    """A soft puff. Alpha falls off from the centre."""
+    import math
+    from PIL import Image
+
+    size = 128
+    image = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+    pixels = image.load()
+    for y in range(size):
+        for x in range(size):
+            nx, ny = (x / (size - 1) - 0.5) * 2, (y / (size - 1) - 0.5) * 2
+            disc = max(0.0, 1.0 - math.sqrt(nx * nx + ny * ny))
+            puff = disc * disc
+            pixels[x, y] = (255, 248, 236, int(puff * 210))
     return image
 
 
@@ -345,10 +491,67 @@ def label(text: str, position: tuple[float, float], scale: float = 1.0) -> Any:
     )
 
 
+def _debug_label() -> Any:
+    try:
+        return label("", (-0.86, -0.46), 1.15)
+    except Exception:
+        return None
+
+
+def grade(mood: str = "neutral") -> str:
+    """Reserved for bloom and exposure.
+
+    CommonFilters bloom washes the sky out to white on the GL path this machine can
+    render, so the call stays a no-op. The sun, fog and vignette are the grade.
+    """
+    return mood
+
+
+_filters: Any = None
+
+
+def _clear_grade() -> None:
+    global _filters
+    if _filters is None:
+        return
+    try:
+        _filters.cleanup()
+    except Exception:
+        pass
+    _filters = None
+
+
+def vignette(session: Any) -> None:
+    """A soft darkening at the edges, generated here. It sits behind the HUD text."""
+    from ursina import Entity, camera, color
+
+    session.own(Entity(
+        parent=camera.ui, model="quad", texture=paint("vignette", _vignette_image()),
+        color=color.rgba(1, 1, 1, 0.85), scale=(1.8, 1.15), z=0.8,
+    ))
+
+
+def _vignette_image() -> Any:
+    from PIL import Image
+
+    size = 256
+    image = Image.new("RGBA", (size, size))
+    pixels = image.load()
+    for y in range(size):
+        for x in range(size):
+            nx, ny = (x / (size - 1) - 0.5) * 2, (y / (size - 1) - 0.5) * 2
+            edge = max(0.0, min(1.0, (nx * nx + ny * ny - 0.55) / 0.9))
+            pixels[x, y] = (8, 6, 10, int(edge * 170))
+    return image
+
+
 def _show(title: str) -> None:
     from panda3d.core import WindowProperties
     from ursina import application
 
+    from sideband.keys import activate
+
+    activate()
     props = WindowProperties()
     props.setMinimized(False)
     props.setTitle(title)

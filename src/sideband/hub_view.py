@@ -146,6 +146,12 @@ class ArcadeWindow:
             widget.bind("<Button-4>", self._wheel)
             widget.bind("<Button-5>", self._wheel)
         self.top.bind("<Tab>", lambda _e: self._tab())
+        from sideband.keys import attach, focus
+
+        attach(self.top)
+        attach(self.canvas)
+        focus(self.top)
+        self._input_line = ""
         self._last = time.monotonic()
         self._tick()
 
@@ -443,6 +449,10 @@ class ArcadeWindow:
 
     def _tick(self) -> None:
         self._job = self.top.after(MENU_MS, self._tick)
+        if getattr(self.hub, "game", None) is None:
+            from sideband.keys import flush_widget
+
+            self._input_line = flush_widget(self.top, canvas=self.canvas)
         now = time.monotonic()
         dt, self._last = min(0.05, now - self._last), now
         self.clock += dt
@@ -466,6 +476,9 @@ class ArcadeWindow:
         if text and now - at < 3.2:
             round_rect(c, AW / 2 - 280, 78, AW / 2 + 280, 118, 14, fill=PANEL, outline=LINE, width=1, tags="dyn")
             c.create_text(AW / 2, 98, text=text, fill=PAPER, font=("Helvetica", 13), tags="dyn")
+        from sideband.keys import stamp
+
+        stamp(c, 24, AH - 22, getattr(self, "_input_line", ""))
 
     def _backdrop(self) -> None:
         spec = LIBRARY[max(0, min(len(LIBRARY) - 1, int(round(self.focus))))]
@@ -718,6 +731,7 @@ class ArcadeWindow:
 
     def lift(self) -> None:
         self.top.deiconify()
-        self.top.lift()
-        self.top.focus_force()
+        from sideband.keys import focus
+
+        focus(self.top)
 

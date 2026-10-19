@@ -51,7 +51,12 @@ class ShelfGameWindow:
         self.canvas.bind("<Button-1>", self._click)
         self.top.protocol("WM_DELETE_WINDOW", self.close)
         self.new_game()
-        self.top.focus_force()
+        from sideband.keys import attach, focus
+
+        attach(self.top)
+        attach(self.canvas)
+        focus(self.top)
+        self._input_line = ""
         self._tick()
 
     def new_game(self) -> None:
@@ -119,6 +124,9 @@ class ShelfGameWindow:
 
     def _tick(self) -> None:
         self._job = self.top.after(FRAME_MS, self._tick)
+        from sideband.keys import flush_widget
+
+        self._input_line = flush_widget(self.top, self.keys, self.canvas)
         level, _caption, _age = self.hub.ear_state()
         if self.state == "playing" and self.name != "simon" and self.edge.rising(level or 0.0):
             self.taps += 1
@@ -144,6 +152,9 @@ class ShelfGameWindow:
         if self.jolt:
             self.canvas.move("dyn", random.randint(-self.jolt, self.jolt), random.randint(-2, 2))
             self.jolt -= 1
+        from sideband.keys import stamp
+
+        stamp(self.canvas, 12, 16, getattr(self, "_input_line", ""))
 
     def _hud(self) -> None:
         c = self.canvas
@@ -264,8 +275,9 @@ class ShelfGameWindow:
 
     def lift(self) -> None:
         self.top.deiconify()
-        self.top.lift()
-        self.top.focus_force()
+        from sideband.keys import focus
+
+        focus(self.top)
 
 
 # Imported by the hub so a typo in the registry fails at import.

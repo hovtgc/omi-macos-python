@@ -255,7 +255,12 @@ class GameWindow:
         self.canvas.bind("<Button-1>", lambda _e: self._pointer())
         self.canvas.bind("<Motion>", self._glide)
         self.top.protocol("WM_DELETE_WINDOW", self.close)
-        self.top.focus_force()
+        from sideband.keys import attach, focus
+
+        attach(self.top)
+        attach(self.canvas)
+        focus(self.top)
+        self._input_line = ""
         self._tick()
 
     def flap(self, strength: float = 1.0) -> None:
@@ -339,6 +344,9 @@ class GameWindow:
         return steer, "keys ← →"
 
     def _tick(self) -> None:
+        from sideband.keys import flush_widget
+
+        self._input_line = flush_widget(self.top, self.keys, self.canvas)
         dt = FRAME_MS / 1000
         self.clock += dt
         self.steer_now, self.steer_label = self._steer()
@@ -358,6 +366,9 @@ class GameWindow:
             self.trail = []
         self._job = self.top.after(FRAME_MS, self._tick)  # first, so a drawing error cannot stop the loop
         self._draw()
+        from sideband.keys import stamp
+
+        stamp(self.canvas, 12, 16, getattr(self, "_input_line", ""))
 
     # --- drawing ---------------------------------------------------------------------------
 

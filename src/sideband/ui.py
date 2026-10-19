@@ -1758,6 +1758,9 @@ class Hub:
             first = "thoughts"
         self.ready = True
         self.root.after(100, lambda: self.open(first))
+        from sideband.keys import activate
+
+        self.log(f"keyboard: {activate()}")
         self.root.mainloop()
         return 0
 

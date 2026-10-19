@@ -40,6 +40,14 @@ class DoctorTest(unittest.TestCase):
         self.assertEqual(checks["cover art (PIL)"].fix, "sh scripts/setup.sh")
         self.assertEqual(checks["3D arcade (ursina)"].fix, "sh scripts/setup.sh")
 
+    def test_keyboard_check_is_not_a_hard_failure_off_mac(self) -> None:
+        from sideband.doctor import machine_checks
+
+        checks = {check.name: check for check in machine_checks()}
+        self.assertIn("Keyboard", checks)
+        self.assertIsNot(checks["Keyboard"].ok, False)
+        self.assertIn("keyboard", checks["Keyboard"].detail.lower())
+
 
 class ReleaseTest(unittest.TestCase):
     def test_pinned_checksum_is_enforced(self) -> None:

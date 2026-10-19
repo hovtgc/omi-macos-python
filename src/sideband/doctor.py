@@ -73,7 +73,15 @@ def machine_checks() -> list[Check]:
         Check("Python", py >= (3, 10), f"{py.major}.{py.minor}.{py.micro} at {sys.executable}",
               "Use Python 3.10+: `uv venv --python 3.12 .venv` (system python3 on macOS is 3.9)."),
         Check("Disk", free_gb >= 8, f"{free_gb:.0f} GB free", "Models need about 6 GB; free some space."),
+        _keyboard_check(),
     ]
+
+
+def _keyboard_check() -> Check:
+    from sideband.keys import keyboard_check
+
+    ok, detail, fix = keyboard_check()
+    return Check("Keyboard", ok, detail, fix)
 
 
 def package_checks() -> list[Check]:

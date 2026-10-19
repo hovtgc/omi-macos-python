@@ -71,7 +71,12 @@ class DesertWindow:
         self.canvas.bind("<ButtonPress-1>", self._press)
         self.canvas.bind("<ButtonRelease-1>", lambda _e: setattr(self, "firing", False))
         self.top.protocol("WM_DELETE_WINDOW", self.close)
-        self.top.focus_force()
+        from sideband.keys import attach, focus
+
+        attach(self.top)
+        attach(self.canvas)
+        focus(self.top)
+        self._input_line = ""
         self._last = time.monotonic()
         self._tick()
 
@@ -114,13 +119,19 @@ class DesertWindow:
             self.reload_pulse = True
 
     def _lock(self) -> None:
+        from sideband.keys import BOARD
+
         self.locked = True
         self.canvas.configure(cursor="none")
+        BOARD.arm_pointer()
         self._warp()
 
     def _unlock(self) -> None:
+        from sideband.keys import BOARD
+
         self.locked = False
         self.firing = False
+        BOARD.release_pointer()
         self.canvas.configure(cursor="arrow")
 
     def _warp(self) -> None:
@@ -132,6 +143,10 @@ class DesertWindow:
         self._warping = False
 
     def _motion(self, event: tk.Event) -> None:
+        from sideband.keys import BOARD
+
+        if BOARD.hid and BOARD.pointer:
+            return
         if self._warping or not self.locked or self.state != "playing":
             return
         dx, dy = event.x - W / 2, event.y - VIEW_H / 2
@@ -198,6 +213,15 @@ class DesertWindow:
 
     def _tick(self) -> None:
         self._job = self.top.after(FRAME_MS, self._tick)
+        from sideband.keys import BOARD, flush_widget
+
+        self._input_line = flush_widget(self.top, self.keys, self.canvas)
+        if self.locked and self.state == "playing":
+            dx, dy = BOARD.look
+            if abs(dx) + abs(dy) > 0.2:
+                self.raid.angle = (self.raid.angle - dx * 0.0054) % math.tau
+                self.pitch = max(-70.0, min(70.0, self.pitch - dy * 0.42))
+                self.hub.note_device("keys")
         now = time.monotonic()
         dt = min(0.05, now - self._last)
         self._last = now
@@ -228,6 +252,9 @@ class DesertWindow:
         if self.jolt:
             c.move("dyn", random.randint(-self.jolt, self.jolt), random.randint(-self.jolt, self.jolt))
             self.jolt -= 1
+        from sideband.keys import stamp
+
+        stamp(c, 12, H - 16, getattr(self, "_input_line", ""))
 
     def _world(self) -> None:
         c, raid = self.canvas, self.raid
@@ -411,8 +438,9 @@ class DesertWindow:
 
     def lift(self) -> None:
         self.top.deiconify()
-        self.top.lift()
-        self.top.focus_force()
+        from sideband.keys import focus
+
+        focus(self.top)
 
 
 def _tones() -> dict[str, str]:

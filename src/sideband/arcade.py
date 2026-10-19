@@ -81,7 +81,12 @@ class MiniGameWindow:
         self.canvas.bind("<Motion>", self._motion)
         self.top.protocol("WM_DELETE_WINDOW", self.close)
         self.new_game()
-        self.top.focus_force()
+        from sideband.keys import attach, focus
+
+        attach(self.top)
+        attach(self.canvas)
+        focus(self.top)
+        self._input_line = ""
         self._tick()
 
     def new_game(self) -> None:
@@ -167,6 +172,9 @@ class MiniGameWindow:
 
     def _tick(self) -> None:
         self._job = self.top.after(FRAME_MS, self._tick)  # first, so a drawing error cannot stop the loop
+        from sideband.keys import flush_widget
+
+        self._input_line = flush_widget(self.top, self.keys, self.canvas)
         x, y, label = self._stick()
         if self.state == "playing":
             before = getattr(self.game, "score", None)
@@ -190,6 +198,9 @@ class MiniGameWindow:
         if self.jolt:
             self.canvas.move("dyn", random.randint(-self.jolt, self.jolt), random.randint(-self.jolt, self.jolt))
             self.jolt -= 1
+        from sideband.keys import stamp
+
+        stamp(self.canvas, 12, 16, getattr(self, "_input_line", ""))
 
     def _hud(self, label: str) -> None:
         c = self.canvas
