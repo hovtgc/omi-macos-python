@@ -1,75 +1,98 @@
-# Sideband: your Omi pendant, on your Mac
+# Sideband
 
-**Tap your [Omi](https://github.com/BasedHardware/omi) to record. Your Mac transcribes it, summarizes it, pulls out the action items, and answers questions about everything you've said. Nothing leaves your Mac.**
+**A game console that lives on your Mac.** Large cover cards, the focused one lifted with a soft glow, and the background taken from that game. Keyboard and mouse first. An [Omi](https://github.com/BasedHardware/omi) pendant is a controller when you want one. An Xbox, PlayStation or generic gamepad is too. Nothing is uploaded. There is no account.
 
-Sideband is a Python Mac app that turns an Omi pendant into a Mac companion:
+![The shelf: a focused cover card on a darkened blur of the same art](docs/screenshots/home.svg)
 
-| | App | What it does |
+The picture above is drawn in the repo (no network, no screenshot tool). Drop a real capture on top of it at `docs/screenshots/home.gif` when you have the app open.
+
+| | | |
 |---|---|---|
-| 🗣 | **Just talk** | Double tap the Omi (or ⌘L) and sit back: the mic stays open and every phrase is either a command for any screen (“open Shopify”, “what's next?”, “make it an action”, “play sky ace”, “what did I promise this week?”) or a thought to keep. A voice bar shows what it heard and what it did; say “that's all” to stop. |
-| 🧠 | **Thought Map** | Tap to talk (or type, or pick any audio file). Whisper transcribes it on the Mac, then the AI files every thought into folders 2 to 3 levels deep (Work › Clients › Acme) and shows you each new folder. As a folder grows, it **matures the idea**: 🌱 seed → 🌿 growing → 🌳 ready, with one concrete next step you can send to Reminders. It also speaks a callout, writes summaries and action items, and answers questions about a thought, a folder or everything. Audio deletes itself after 24 hours; thoughts stay. |
-| 🎛 | **Controls** | Map single / double / triple / hold taps to Mac actions: open apps, keystrokes, Shortcuts, URLs, volume, record, voice menu, AppleScript, shell. |
-| 🗣 | **Voice menu** | Press ⌘L or tap, then say "start recording", "summarize that", "open arcade", "close". |
-| 🕹 | **Omi Arcade** | You talk to it: tap the pendant (or click the mic bar), say "play sky ace", "the corn one" or "play this", and the local LLM works out what you meant. The mic stays on in games, so "exit game", "pause" and "play again" work mid-game. In a game: tilt steers, tap goes forward, double tap goes back. A colour-coded legend on every screen says what each control does right now. **Sky Ace 1943** (a 3D WWII dogfight), Omi Flap 3D, **Corn Maze**, Star Dodger, Omi Catch, Voice Flap. |
-| 📶 | **Bluetooth** | Connect, scan, switch pendants, and see what the link is doing. |
+| 🕹 | **The shelf** | The window that opens. Cover art, a details strip under the focused card. Arrow keys or the scroll wheel move. Enter plays. Esc goes back. Hover a card, click it to play. |
+| 🎚 | **One-button games** | Beat Tap, Quickdraw, Omi Dash, Simon Omi. Stock pendant firmware is enough: tap, double tap, hold, or a shout. |
+| ✈️ | **Desert 91 and the 3D games** | The flagship is a 1991 desert in a real 3D window: WASD, mouse look, click to fire. Sky Ace 1943, Star Dodger and Corn Maze use the same window. Omi Flap 3D, Omi Catch, Voice Flap and the one-button games still use the built-in view. |
+| 🎙 | **Voice Flap** | Say "go left". Say "play sky ace" from the shelf. Say "settings". |
+| ⚙ | **Everything else** | Thought Map, tap-to-Mac controls, Bluetooth, AI settings, status. The gear at the top right, or Tab. Not on the game row. |
 
-It runs Whisper large-v3-turbo, Vosk and macOS speech locally. The assistant is your choice in **AI settings**: a model on the Mac with MLX (Qwen2.5-7B by default, any mlx-community model works), a local server like Ollama or LM Studio, or any OpenAI-compatible API with your own key (kept in the Keychain; only then does transcript text leave the Mac). There is no account, no cloud by default, and no telemetry. MIT licensed. Not affiliated with Based Hardware; this is not the Omi phone app.
+Scores, play counts and the recent row are a JSON file on the Mac (`~/Library/Application Support/sideband/arcade.json`). Whisper, Vosk and the assistant stay on the machine unless you opt into an API in AI settings. MIT licensed. Not affiliated with Based Hardware.
 
-## Quick start: let your agent do it
-
-Clone the repo, open the folder in **Claude Code** or **Codex**, and say:
-
-> **Set me up.**
-
-The agent follows [ONBOARDING.md](ONBOARDING.md): it installs everything with one script, checks each step, and stops when it needs you (allowing Bluetooth, tapping the pendant). You'll be transcribing in about 15 minutes, most of it the one-time model download.
-
-## Quick start: by hand
+## Play
 
 ```sh
 git clone https://github.com/hovtgc/omi-macos-python.git && cd omi-macos-python
-sh scripts/setup.sh                # Python 3.12 via uv, packages, tests, Sideband.app, models (~6 GB)
-.venv/bin/sideband open launcher   # then allow Bluetooth when macOS asks
+sh scripts/setup.sh
+.venv/bin/sideband open arcade
 ```
 
-Tap the pendant to wake it; the launcher connects on its own. Open the **Transcriber** (⌘1), click the red button, talk, click again. Next time, double-click **Sideband** in `~/Applications` or find it in Spotlight.
+You can start without a pendant. The keyboard is the controller:
 
-`.venv/bin/sideband doctor` tells you what's ready and what to do next.
+| | Shelf | In a game |
+|---|---|---|
+| Move | ← → or A D, or the scroll wheel | Arrows or W A S D where the game steers |
+| Play / action | Enter or Space, or click the focused card | Space or Enter |
+| Back | Esc | Esc (pause first if you are mid-game) |
+| Settings | Tab, or the gear | |
 
-## Requirements
+Omi, if it is connected: **tap** next card, **double tap** back, **hold** to launch. In a game, tap is the button, double tap leaves, hold pauses. Say "exit game", "pause" or "play again". A shout (the mic getting loud) jumps in Omi Dash and hits in Beat Tap.
 
-- An **Omi pendant**. Motion (tilt games) needs the Omi CV 1 and the optional motion firmware; everything else works on stock firmware.
-- A **Mac with Apple silicon** (M1 or later) on **macOS 13+** for the transcriber and assistant (MLX). On Intel Macs, Bluetooth, Controls and the Arcade still work.
-- About **8 GB** free disk for the models.
+Gamepad (optional): `uv pip install -e '.[gamepad]'` from the repo, with pygame. Plug in a pad; it shows up in the gear → Controllers, including after you plug it in mid-session. A plays, B goes back, the stick or d-pad moves, Start opens settings. The legend on screen changes to the controller you used last, or the one you pin there.
+
+## The games
+
+| Game | How | Stock firmware |
+|---|---|---|
+| **Desert 91** | Flagship, in 3D. Outside Kuwait, 1991. Sand, sun, haze, burning wells, berms, bunkers, soldiers and vehicles. WASD moves, mouse looks, click fires, R reloads, F11 fills the screen. Three short missions. Esc pauses, Esc again returns to the shelf. | Keys and mouse. Tilt and a pad work too. |
+| **Sky Ace 1943** | 3D chase view. Golden hour over the desert. Arrows fly, Space fires, B rolls. | Keys, yes. Tilt needs motion firmware. |
+| **Omi Flap 3D** | Tap flaps, tilt or arrows steer. Built-in view. | Yes, with arrows. |
+| **Corn Maze** | 3D hedges at dusk. Roll to the barn. Best time is the one that is shorter. | Keys, yes. |
+| **Star Dodger** | 3D nebula. Fly, fire, shake for a bomb. | Keys, yes. |
+| **Omi Catch** | Slide the basket. | Keys, yes. |
+| **Voice Flap** | "go left / right / up / down". | Yes. |
+| **Beat Tap** | Tap on the beat. A shout counts. | Yes. |
+| **Quickdraw** | Wait for DRAW, then tap. Early is a foul. | Yes. |
+| **Omi Dash** | One button. Tap or shout to jump. | Yes. |
+| **Simon Omi** | Repeat the pattern. Single tap is green, double tap (or X / D / the right pad) is amber. | Yes. |
+
+## Settings and connections
+
+The gear (Tab, or say "settings", or Start on a pad) opens:
+
+- **Thought Map** — tap to talk, Whisper on the Mac, folders, summaries, action items. `sideband open thoughts`.
+- **Controls** — what a tap does on the Mac when you are not in a game.
+- **Bluetooth** — connect, scan, switch pendants.
+- **AI settings** — a model on the Mac (MLX), a local server, or an API key kept in the Keychain.
+- **Status** — the same checks as `sideband doctor`.
+- **Controllers** — Auto, keyboard, Omi, or a named gamepad.
+- **Event log** — the connection log.
+
+`sideband open launcher` is the shelf. ⌘1 is the shelf, ⌘2 Thought Map, ⌘3 Controls, ⌘4 Bluetooth.
 
 ## Motion firmware (optional)
 
-Stock Omi firmware leaves the pendant's 6-axis sensor off. Sideband ships a small firmware patch that streams it for tilt and shake, as a prebuilt, checksum-pinned release plus the source. Installing it is optional, needs your explicit yes, and the pendant has **no rollback**, so read [ONBOARDING.md step 7](ONBOARDING.md#7-optional-motion-firmware-for-tilt-games-omi-cv-1-only) first. Details: [firmware/README.md](firmware/README.md).
+Stock Omi firmware leaves the pendant's sensor off. Tilt in the flying games needs a small patch, pinned and optional, and the pendant has **no rollback**. Read [ONBOARDING.md step 7](ONBOARDING.md#7-optional-motion-firmware-for-tilt-games-omi-cv-1-only) and [firmware/README.md](firmware/README.md). Do not flash without a yes in chat.
 
-## How it fits together
+## Requirements
 
-```
-Omi pendant ──Bluetooth──▶ Sideband.app (holds the permission)
-                              └─ launcher: one connection shared by the apps
-                                   ├─ recorder → Whisper → transcript.md → local LLM → summary / answers
-                                   ├─ taps → your Mac actions      ├─ voice menu (Vosk)
-                                   └─ Arcade (voice, taps, tilt, shake)   └─ Bluetooth tools
-```
+- A Mac. Apple silicon and macOS 13+ for Whisper and the on-Mac assistant. Keyboard play, Bluetooth, Controls and the shelf work on Intel too.
+- An Omi pendant only if you want that controller. The shelf does not wait for one.
+- About 8 GB free if you download the speech models (`sh scripts/setup.sh`). Skip them with `--no-models` and you can still play.
+- Pillow draws the cover cards. Ursina (Panda3D) draws Desert 91, Sky Ace 1943, Star Dodger and Corn Maze. `sh scripts/setup.sh` installs both. `sideband doctor` flags them if they are missing. The other games keep working on the built-in view.
 
-Why an app wrapper? macOS only gives Bluetooth to the app that started a process, so Python run from a terminal, IDE or agent is killed silently. `Sideband.app` is a tiny ad-hoc-signed bundle that holds the permission and runs this repo's Python.
+The 3D scenes use Ursina's procedural shapes, which are MIT licensed ([pokepetter/ursina](https://github.com/pokepetter/ursina)). Sand, sky and nebula textures are generated on the Mac with Pillow. Nothing is downloaded when a game starts.
 
 ## Commands
 
 ```sh
-sideband open launcher|transcriber|controls|arcade|bluetooth   # reuses a running launcher
-sideband doctor [--pendant]                                   # checks and next steps
+sideband open arcade          # the shelf. also: launcher, or double-click Sideband.app
+sideband open thoughts        # Thought Map
+sideband open desert          # or beat, draw, dash, simon, fighter, flap, corn, dodger, catch, voice
+sideband doctor [--pendant]
 sideband models --download
-sideband --via-app scan                                       # radio commands from a shell go through the app
-sideband firmware --install official|motion [--yes-flash]
-sideband install --address <id>                               # keep the link alive at login
+sideband --via-app scan       # radio commands go through Sideband.app
 ```
 
-`sideband open …` works from Shortcuts, Raycast and Alfred too. Inside the app, the **Apps** menu has ⌘1–⌘4.
+Why the app wrapper: macOS only gives Bluetooth to the process that owns the permission. `Sideband.app` holds it. From a terminal that is not that app, use `--via-app`.
 
 ## Contributing
 
-Read [AGENTS.md](AGENTS.md) (the contract for people and coding agents), then [TASKS.md](TASKS.md). `sh scripts/test.sh` must stay green; tests need no pendant. [NOTES.md](NOTES.md) records what was verified on real hardware.
+[CONTRIBUTING.md](CONTRIBUTING.md) is the short version: run `sh scripts/test.sh`, and how to add a game on the shared registry. The contract for agents is [AGENTS.md](AGENTS.md). [NOTES.md](NOTES.md) is a hardware log. Tests need no pendant and no display beyond Tk being importable.

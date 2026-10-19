@@ -1,4 +1,6 @@
-# Onboarding: from clone to transcribing
+# Onboarding: from clone to the arcade
+
+The app opens on the game shelf. Thought Map (transcription) is behind the gear, top right of that shelf, or `sideband open thoughts`. The rest of this playbook still gets the pendant connected and the models installed.
 
 This is the setup playbook. If you are an agent (Claude Code, Codex, …) and the user wants to set up or use Sideband, follow it top to bottom: run each step, check the result, and stop at 🧑 steps until the user says they are done. Tell the user what you are doing in plain words. If a check fails, use the "If it fails" note before moving on.
 
@@ -28,13 +30,13 @@ Do not ask them to hold the button: **holding it for 3 seconds turns the pendant
 ## 3. Start Sideband and allow Bluetooth
 
 ```sh
-.venv/bin/sideband open launcher
+.venv/bin/sideband open arcade
 ```
 
-🧑 macOS shows "Sideband would like to use Bluetooth". The user clicks **Allow**. This happens once.
+`open launcher` is the same shelf. 🧑 macOS shows "Sideband would like to use Bluetooth". The user clicks **Allow**. This happens once.
 
-- **Check:** the launcher window's top right says `connected` with a battery level within about 10 s. If there is no remembered pendant yet, it scans and connects to the first Omi it finds.
-- **If it fails:** open the Bluetooth app (⌘4) and use Scan. See the troubleshooting table below.
+- **Check:** the shelf's top left says `OMI LINKED` with a battery percent within about 10 s. If there is no remembered pendant yet, it scans and connects to the first Omi it finds. You can play with the keyboard before that.
+- **If it fails:** the gear (or Tab) → Bluetooth, or ⌘4, then Scan. See the troubleshooting table below.
 
 Why an app: macOS gives Bluetooth only to the app that started a process. Python run straight from an agent or an IDE is killed silently with SIGABRT. Always run radio commands as `sideband --via-app …` or through `sideband open …`; never run `sideband scan` bare from an agent shell.
 

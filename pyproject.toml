@@ -1,11 +1,11 @@
 [project]
 name = "sideband"
 version = "0.2.0"
-description = "Mac companion for an Omi pendant: background Bluetooth hold, button → Mac actions, a tap-and-tilt game."
+description = "A local Mac arcade. Keyboard, mouse, an Omi pendant or a gamepad. Thought Map and the pendant tools live in the settings menu."
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
-dependencies = ["bleak>=0.22"]
+dependencies = ["bleak>=0.22", "pillow>=10", "ursina>=7"]
 
 [project.optional-dependencies]
 audio = ["av>=12"]
@@ -13,12 +13,16 @@ firmware = ["smpclient>=7"]
 voice = ["vosk>=0.3.44", "av>=12"]
 transcribe = ["mlx-whisper>=0.4", "av>=12"]
 llm = ["mlx-lm>=0.20"]
+gamepad = ["pygame>=2.5"]
 
 [project.scripts]
 sideband = "sideband.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+sideband = ["assets/covers/*.jpg"]
 
 [build-system]
 requires = ["setuptools>=68"]

@@ -247,7 +247,7 @@ def summary_of(markdown: str) -> str | None:
     return markdown.split(SUMMARY_START, 1)[1].split(SUMMARY_END, 1)[0].strip()
 
 
-ARCADE_ACTIONS = ("recalibrate", "close", "help", "none")
+ARCADE_ACTIONS = ("recalibrate", "close", "help", "settings", "none")
 THIS_WORDS = {"this", "that", "it", "one", "again", "selected", "highlighted"}
 
 
@@ -269,6 +269,7 @@ def arcade_messages(heard: str, games: list[tuple[str, str, str]], selected: str
                 "show <key>  (only when they ask a question about a game; just naming a game means play it)\n"
                 "recalibrate  (fix, reset or calibrate the tilt controls)\n"
                 "close  (leave or close the arcade)\n"
+                "settings  (open settings, connections, controls, bluetooth or the thought map)\n"
                 "help  (they ask what they can say or which games there are)\n"
                 "none  (anything else)\n"
                 "Examples: 'play a's' -> play fighter. 'I want to shoot some planes' -> play fighter. "
@@ -300,8 +301,10 @@ def guess_arcade(heard: str, names: dict[str, str], selected: str | None) -> str
     said = set(words)
     if any("calibrat" in w for w in words) or {"reset", "fix"} & said:
         return "recalibrate"
-    if said & {"close", "quit", "exit", "leave"}:
+    if said & {"close", "quit", "exit", "leave"} and not (said & {"settings", "setting"} or any(w.startswith("setting") for w in words)):
         return "close"
+    if said & {"settings", "setting", "connections"} or any(w.startswith("setting") for w in words):
+        return "settings"
     if "help" in said or {"what", "can"} <= said:
         return "help"
     for word in words:

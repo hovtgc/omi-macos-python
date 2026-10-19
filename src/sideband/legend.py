@@ -19,35 +19,90 @@ CONTROLS = {
     "tilt": ("✥ TILT", "#ff4fd8"),
     "shake": ("≋ SHAKE", "#ffe66d"),
     "say": ("“ SAY ”", "#4dffb0"),
+    # Keyboard and gamepad, same chips, the words on the keycap change with the active controller.
+    "arrows": ("ARROWS", "#ff4fd8"),
+    "enter": ("ENTER", "#3ddc84"),
+    "esc": ("ESC", "#ffb020"),
+    "space": ("SPACE", "#3ddc84"),
+    "xkey": ("X", "#ffb020"),
+    "keyb": ("B", "#ffe66d"),
+    "a": ("A", "#3ddc84"),
+    "b": ("B", "#ffb020"),
+    "y": ("Y", "#ffe66d"),
+    "stick": ("STICK", "#ff4fd8"),
+    "start": ("START", "#4db8ff"),
+    "mouse": ("MOUSE", "#d6e4ff"),
+    "rkey": ("R", "#ffe66d"),
 }
 
 PLAY = {
-    "menu": (("tap", "TALK"), ("say", "PLAY SKY ACE · PLAY THIS · RECALIBRATE")),
+    "menu": (("tap", "NEXT"), ("double", "BACK"), ("hold", "PLAY"), ("say", "PLAY SKY ACE · SETTINGS")),
     "fighter": (("tilt", "FLY"), ("tap", "FIRE"), ("double", "BURST"), ("shake", "ROLL"), ("hold", "PAUSE")),
     "flap": (("tilt", "STEER"), ("tap", "FLAP"), ("double", "BIG FLAP"), ("hold", "PAUSE")),
     "voice": (("tap", "MIC ON / OFF"), ("say", "GO LEFT · RIGHT · UP · DOWN · EXIT"), ("hold", "PAUSE")),
     "corn": (("tilt", "ROLL"), ("tap", "BRAKE"), ("hold", "PAUSE")),
     "dodger": (("tilt", "FLY"), ("tap", "FIRE"), ("shake", "BOMB"), ("hold", "PAUSE")),
     "catch": (("tilt", "MOVE"), ("hold", "PAUSE")),
+    "beat": (("tap", "HIT"), ("say", "SHOUT"), ("hold", "PAUSE")),
+    "draw": (("tap", "DRAW"), ("hold", "PAUSE")),
+    "dash": (("tap", "JUMP"), ("say", "SHOUT"), ("hold", "PAUSE")),
+    "simon": (("tap", "GREEN"), ("double", "AMBER"), ("hold", "PAUSE")),
+    "desert": (("tilt", "MOVE"), ("tap", "FIRE"), ("shake", "RELOAD"), ("hold", "PAUSE")),
 }
 STATES = {"ready": "START", "paused": "RESUME", "over": "AGAIN", "won": "NEXT LEVEL"}
 
+# The shelf, per controller. Keyboard and mouse are the default the window asks for.
+MENU = {
+    "keys": (("arrows", "MOVE"), ("enter", "PLAY"), ("esc", "BACK"), ("say", "A GAME · TAB SETTINGS")),
+    "omi": PLAY["menu"],
+    "pad": (("stick", "MOVE"), ("a", "PLAY"), ("b", "BACK"), ("start", "SETTINGS")),
+}
+_TO_KEYS = {"tilt": "arrows", "tap": "space", "double": "xkey", "shake": "keyb", "hold": "esc", "say": "say"}
+_TO_PAD = {"tilt": "stick", "tap": "a", "double": "b", "shake": "y", "hold": "start", "say": "say"}
 
-def legend(game: str, state: str = "playing", motion: bool = True) -> tuple[tuple[str, str], ...]:
+
+def device_of(label: str) -> str:
+    """A steer label from a game window ('keys ← →', 'pendant tilt', 'pad') as keys / omi / pad."""
+    low = (label or "").lower()
+    if not low or low.startswith("key"):
+        return "keys"
+    if "tilt" in low or "pendant" in low or low in ("omi", "voice"):
+        return "omi"
+    return "pad"
+
+
+def _retarget(items: tuple[tuple[str, str], ...], device: str) -> tuple[tuple[str, str], ...]:
+    table = {"keys": _TO_KEYS, "pad": _TO_PAD}.get(device)
+    if table is None:
+        return items
+    return tuple((table.get(control, control), label) for control, label in items)
+
+
+def legend(game: str, state: str = "playing", motion: bool = True, device: str = "keys") -> tuple[tuple[str, str], ...]:
     """The controls to show for `game` ("menu" or a game key) in `state`, as (control, label) pairs.
 
-    Outside play every game is the same: one tap goes forward, a double tap goes back to the Arcade.
-    The mic stays on in every game, so saying "exit game" also goes back; `draw_ear` shows that.
+    Outside play every game is the same: confirm goes forward, cancel goes back to the Arcade.
+    On the keyboard that is Enter and Esc. On the Omi it is a tap and a double tap. On a pad it is A and B.
+    `device` is "keys", "omi" or "pad". Keyboard is the default. The mic stays on, so "exit game" also goes back.
     """
+    if game == "desert" and state == "playing":
+        if device == "keys":
+            return (("mouse", "LOOK"), ("arrows", "WASD"), ("space", "FIRE"), ("rkey", "RELOAD"), ("esc", "PAUSE"))
+        if device == "pad":
+            return (("stick", "MOVE"), ("a", "FIRE"), ("y", "RELOAD"), ("start", "PAUSE"))
     if game == "menu":
-        return PLAY[game]
-    if state == "playing":
-        items = PLAY[game]
-    else:
-        items = (("tap", STATES[state]), ("double", "ARCADE"))
-    if not motion:  # arrow keys stand in for tilt
+        return MENU.get(device, MENU["keys"])
+    if state != "playing":
+        label = STATES[state]
+        if device == "keys":
+            return (("enter", label), ("esc", "ARCADE"))
+        if device == "pad":
+            return (("a", label), ("b", "ARCADE"))
+        return (("tap", label), ("double", "ARCADE"))
+    items = PLAY[game]
+    if device == "omi" and not motion:  # arrow keys stand in for tilt
         items = tuple((control, f"{label} · ARROWS" if control == "tilt" else label) for control, label in items)
-    return items
+    return _retarget(items, device)
 
 
 def round_rect(c: tk.Canvas, x0: float, y0: float, x1: float, y1: float, r: float, **kw) -> int:

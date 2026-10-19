@@ -15,7 +15,7 @@ This stays a Python application. Do not rewrite it in Swift, JavaScript, or as a
 
 ## Product
 
-Thought Map first: tap to talk (or type), Whisper transcribes on the Mac, the assistant files each thought into folders 2 to 3 levels deep, matures growing folders into a next action, writes summaries and action items and answers questions. The assistant is MLX on the Mac by default, or any OpenAI-compatible server (`llm.Backend`). Then Controls (taps → Mac actions), a voice menu, the Arcade, and a Bluetooth tool. It also holds the pendant's link in the background, which the official phone app drops when it leaves the foreground. Nothing is uploaded. There is no account.
+The home screen is the arcade: a local game shelf of cover cards (keyboard and mouse first, Omi pendant and gamepads as extra controllers). Desert 91, Sky Ace 1943, Omi Flap 3D, Corn Maze, Star Dodger, Omi Catch, Voice Flap, plus one-button games that need no tilt. Scores stay in `arcade.json` on the Mac. Thought Map, Controls, Bluetooth, AI settings and status are still in the app, behind the gear on the shelf. The assistant is MLX on the Mac by default, or any OpenAI-compatible server (`llm.Backend`). The app also holds the pendant's link in the background, which the official phone app drops when it leaves the foreground. Nothing is uploaded. There is no account.
 
 USB does not carry audio. Do not add a USB transport.
 
@@ -92,8 +92,13 @@ A connected pendant stops advertising. Close the window before `firmware` or `sc
 | `src/sideband/controls.py` | Controls window: live inputs and the gesture map. |
 | `src/sideband/arcade.py` | Omi Arcade menu (tap to talk, the local LLM picks the game; tap-to-lock tilt calibration), mini game windows, Corn Maze art. |
 | `src/sideband/legend.py` | The control legend: which controls each game and state shows (pure), and the colour-coded chips. |
+| `src/sideband/stage.py` | Shared Ursina window. One Panda process, Tk hub pumped each frame, Esc returns without quitting Sideband. |
+| `src/sideband/desert_world.py` | Desert 91 in Ursina. The fight stays in `desert.py`. |
+| `src/sideband/sky_world.py` | Sky Ace 1943 in Ursina. The dogfight stays in `skyfighter.py`. |
+| `src/sideband/dodger_world.py` | Star Dodger in Ursina. |
+| `src/sideband/corn_world.py` | Corn Maze in Ursina. |
 | `src/sideband/skyfighter.py` | Sky Ace 1943 game state. Pure. |
-| `src/sideband/skyfighter_view.py` | Sky Ace 1943 software 3D renderer (Tk). |
+| `src/sideband/skyfighter_view.py` | Sky Ace 1943 fallback renderer (Tk), used when Ursina is missing. |
 | `src/sideband/meshes.py` | Low-poly aircraft meshes and 3D math. Pure. |
 | `src/sideband/speech.py` | Spoken callouts through macOS `say`; voice choice. |
 | `src/sideband/minigames.py` | Corn Maze (`MarbleMaze`), Star Dodger, Omi Catch. Pure. |

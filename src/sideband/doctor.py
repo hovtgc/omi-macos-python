@@ -32,6 +32,8 @@ FEATURES = {
 }
 EXTRAS = (
     ("bleak", "bluetooth", "base install"),
+    ("PIL", "cover art", "pillow"),
+    ("ursina", "3D arcade", "ursina"),
     ("av", "audio decoding", "audio"),
     ("mlx_whisper", "transcription", "transcribe"),
     ("mlx_lm", "assistant", "llm"),
@@ -71,14 +73,27 @@ def machine_checks() -> list[Check]:
         Check("Python", py >= (3, 10), f"{py.major}.{py.minor}.{py.micro} at {sys.executable}",
               "Use Python 3.10+: `uv venv --python 3.12 .venv` (system python3 on macOS is 3.9)."),
         Check("Disk", free_gb >= 8, f"{free_gb:.0f} GB free", "Models need about 6 GB; free some space."),
+        _keyboard_check(),
     ]
+
+
+def _keyboard_check() -> Check:
+    from sideband.keys import keyboard_check
+
+    ok, detail, fix = keyboard_check()
+    return Check("Keyboard", ok, detail, fix)
 
 
 def package_checks() -> list[Check]:
     out = []
     for module, purpose, extra in EXTRAS:
         found = importlib.util.find_spec(module) is not None
-        fix = "pip install -e ." if extra == "base install" else f"pip install -e '.[{extra}]'"
+        if extra in ("pillow", "ursina"):
+            fix = "sh scripts/setup.sh"
+        elif extra == "base install":
+            fix = "pip install -e ."
+        else:
+            fix = f"pip install -e '.[{extra}]'"
         out.append(Check(f"{purpose} ({module})", found, "installed" if found else "missing", fix))
     return out
 

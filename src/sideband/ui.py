@@ -48,6 +48,8 @@ from sideband.speech import Speaker
 from sideband.llm import title as transcript_title
 from sideband.recordings import list_recordings, new_path
 from sideband.transcribe import Transcriber
+from sideband.pads import PadBank, pygame_ready
+from sideband.platform import Scorebook, game as game_spec
 from sideband.voice import GAMES as SPOKEN_GAMES, VoiceListener, ingame_command, mic_meter, model_path
 
 PUMP_MS = 10
@@ -55,9 +57,9 @@ STEADY_S = 1.0  # recentring uses the median of this much motion
 SWEEP_MS = 10 * 60 * 1000  # check the 24-hour audio limit this often
 GREY = "#8a8f98"
 APPS = (
+    ("arcade", "🕹", "Arcade", "The shelf. Keyboard and mouse, or an Omi, or a gamepad."),
     ("transcriber", "🧠", "Thought Map", "Talk into your Omi; each thought is transcribed and filed into folders by the AI."),
     ("controls", "🎛", "Controls", "Map taps to Mac actions and watch every live input."),
-    ("arcade", "🕹", "Arcade", "Sky Ace 1943, Omi Flap 3D, Corn Maze, Star Dodger, Omi Catch, Voice Flap. Played with the pendant."),
     ("bluetooth", "📶", "Bluetooth", "Connect, scan, switch pendants and debug the link."),
 )
 REQUEST_MS = 400  # how often the launcher checks for `sideband open <app>` requests
@@ -284,6 +286,15 @@ class Hub:
         self.settings = self._load_settings()
         self.speaker = Speaker()
         self.last_audio = (0, time.monotonic())
+        self.scores = Scorebook(self.app.support_dir / "arcade.json")
+        self.pads = PadBank()
+        self.controller = str(self.settings.get("controller") or "auto")
+        if self.controller not in ("auto", "keys", "omi", "pad"):
+            self.controller = "auto"
+        self.last_device = "keys"
+        preferred = str(self.settings.get("pad_name") or "")
+        self.pads.preferred = preferred or None
+        self.ready = False
 
         self.root = tk.Tk()
         self.root.title("Sideband")
@@ -379,7 +390,9 @@ class Hub:
         self.root.focus_force()
 
     def open(self, key: str) -> None:
-        if key in ("transcriber", "launcher", "thoughts") and self.native is not None:
+        if key in ("launcher", "home"):
+            key = "arcade"
+        if key in ("transcriber", "thoughts") and self.native is not None:
             if self.transcriber_win is None:
                 self.transcriber_win = self.native.ShellWindow(self)
             self.transcriber_win.lift()
@@ -436,6 +449,13 @@ class Hub:
             self._route_mic()
         elif window is self.bluetooth:
             self.bluetooth = None
+        if self.ready and self.arcade is None and self.game is None and self.transcriber_win is None and self.controls is None and self.bluetooth is None:
+            try:
+                hidden = self.root.state() == "withdrawn"
+            except tk.TclError:
+                hidden = True
+            if hidden:
+                self.root.after(0, self.close)
 
     # --- shared services -------------------------------------------------------------------
 
@@ -782,6 +802,10 @@ class Hub:
         elif verb == "go":
             if arg == "controls":
                 self.open("controls")
+            elif arg in ("pendant", "bluetooth"):
+                self.open("bluetooth")
+            elif arg == "arcade":
+                self.open("arcade")
             else:
                 self.open("thoughts")
                 if hasattr(self.transcriber_win, "show_place"):
@@ -971,7 +995,7 @@ class Hub:
             elif self.windows:
                 self.windows[-1].close()  # type: ignore[attr-defined]
         elif kind == "home":
-            self.show()
+            self.open("arcade")
 
     def toggle_mic(self) -> None:
         error = self.radio.set_mic(not self.radio.mic_on)
@@ -1088,25 +1112,90 @@ class Hub:
 
     # --- games -----------------------------------------------------------------------------
 
+    def _launch_3d(self, name: str, title: str, factory: object, flat) -> None:
+        """Open an Ursina session, or the Tk window when 3D is not there."""
+        from sideband import stage
+
+        if not stage.available():
+            self.log(f"{title}: Ursina is not installed, so this stays on the built-in view. Run sh scripts/setup.sh")
+            flat()
+            return
+        try:
+            stage.ensure()
+        except Exception as exc:
+            self.log(f"{title}: the 3D window did not open ({exc}). Using the built-in view.")
+            flat()
+            return
+        self.game = factory(self, self._game_closed)  # type: ignore[operator]
+        self.game_name = name
+        self.log(f"{title}: 3D window. Esc pauses, Esc again returns, F11 is fullscreen.")
+        self.root.after(1, lambda: stage.play(self, self.game))
+
     def open_game(self, name: str) -> None:
         if self.game is not None:
             self.game.top.lift()
             return
         self.recentre()
         name = "corn" if name == "marble" else name
-        if name in ("corn", "dodger", "catch"):
+        if game_spec(name) is not None:
+            self.scores.touch(name)
+        if name in ("beat", "draw", "dash", "simon"):
+            from sideband.shelf_view import ShelfGameWindow
+
+            self.game = ShelfGameWindow(self, name, self._game_closed)
+            self.game_name = name
+            self.log(f"{name} open: one button, keyboard or the pendant")
+            return
+        if name == "desert":
+            from sideband.desert_view import DesertWindow
+            from sideband.desert_world import DesertSession
+
+            def _flat() -> None:
+                self.game = DesertWindow(self, self._game_closed)
+                self.game_name = "desert"
+                self.log("Desert 91: flat view. WASD moves, mouse looks, click fires, R reloads")
+
+            self._launch_3d("desert", "Desert 91", DesertSession, _flat)
+            return
+        if name == "fighter":
+            from sideband.sky_world import SkySession
+            from sideband.skyfighter_view import FighterWindow
+
+            def _flat() -> None:
+                self.game = FighterWindow(self, self._game_closed)
+                self.game_name = "fighter"
+                self.log("Sky Ace 1943: arrows fly, space fires, B rolls, Esc pauses")
+
+            self._launch_3d("fighter", "Sky Ace 1943", SkySession, _flat)
+            return
+        if name == "dodger":
+            from sideband.arcade import MiniGameWindow
+            from sideband.dodger_world import DodgerSession
+
+            def _flat() -> None:
+                self.game = MiniGameWindow(self, name, self._game_closed)
+                self.game_name = name
+                self.log("dodger open: taps, tilt and shakes go to the game")
+
+            self._launch_3d("dodger", "Star Dodger", DodgerSession, _flat)
+            return
+        if name == "corn":
+            from sideband.arcade import MiniGameWindow
+            from sideband.corn_world import CornSession
+
+            def _flat() -> None:
+                self.game = MiniGameWindow(self, name, self._game_closed)
+                self.game_name = name
+                self.log("corn open: taps, tilt and shakes go to the game")
+
+            self._launch_3d("corn", "Corn Maze", CornSession, _flat)
+            return
+        if name == "catch":
             from sideband.arcade import MiniGameWindow
 
             self.game = MiniGameWindow(self, name, self._game_closed)
             self.game_name = name
             self.log(f"{name} open: taps, tilt and shakes go to the game")
-            return
-        if name == "fighter":
-            from sideband.skyfighter_view import FighterWindow
-
-            self.game = FighterWindow(self, self._game_closed)
-            self.game_name = name
-            self.log("Sky Ace 1943: tilt flies, tap fires, shake rolls, hold pauses")
             return
         self.game_name = name
         if name == "voice":
@@ -1118,10 +1207,17 @@ class Hub:
                 lambda text: self.post("voice_text", text),
             )
             self.voice.start()
-            self.game = GameWindow(self.root, self._game_closed, voice=True, voice_status=lambda: (self.voice_on, self.voice_heard), ear=self.ear_state)
-            self.log("Voice Flap open: tap the pendant to unmute, say go left / right / up / down (nothing recorded)")
+            self.game = GameWindow(
+                self.root, self._game_closed, voice=True,
+                voice_status=lambda: (self.voice_on, self.voice_heard), ear=self.ear_state,
+                device_source=self.active_device, on_device=self.note_device, on_mic=self._toggle_voice,
+            )
+            self.log("Voice Flap open: space or a tap for the mic, arrows or say go left / right / up / down")
         else:
-            self.game = GameWindow(self.root, self._game_closed, self._pendant_steer, self._game_key, ear=self.ear_state)
+            self.game = GameWindow(
+                self.root, self._game_closed, self._pendant_steer, self._game_key, ear=self.ear_state,
+                device_source=self.active_device, on_device=self.note_device,
+            )
             self.log("Omi Flap 3D open: taps flap instead of running actions")
 
     # --- Arcade voice: an open-vocabulary listener while the Arcade or a game is open ------
@@ -1295,36 +1391,108 @@ class Hub:
             self.tilt.calibrate(sample)
 
     def _pendant_steer(self) -> tuple[float, str] | None:
-        stick = self.stick()
-        return None if stick is None else (stick[0], stick[2])
+        axes = self.play_axes()
+        return None if axes is None else (axes[0], axes[2])
 
     def _game_key(self, key: str) -> None:
         if key == "c":
             self.recentre()
 
-    @property
-    def _scores_path(self) -> Path:
-        return self.app.support_dir / "arcade.json"
-
-    def _scores(self) -> dict[str, float]:
-        try:
-            return {k: float(v) for k, v in json.loads(self._scores_path.read_text(encoding="utf-8")).items()}
-        except (OSError, ValueError, AttributeError):
-            return {}
-
     def best(self, name: str) -> float | None:
-        return self._scores().get(name)
+        return self.scores.best(name)
+
+    def recent_games(self) -> list[str]:
+        return list(self.scores.recent)
 
     def record_score(self, name: str, score: float, lower_is_better: bool = False) -> None:
-        scores = self._scores()
-        old = scores.get(name)
-        if old is None or (score < old if lower_is_better else score > old):
-            scores[name] = score
-            self._scores_path.parent.mkdir(parents=True, exist_ok=True)
-            self._scores_path.write_text(json.dumps(scores, indent=2) + "\n", encoding="utf-8")
+        if self.scores.record(name, score, lower_is_better=lower_is_better):
             self.log(f"{name}: new best {score:g}")
         if self.arcade is not None:
             self.arcade.refresh_scores()
+
+    def note_device(self, name: str) -> None:
+        """In auto mode the legend follows the controller that was just used."""
+        if self.controller == "auto" and name in ("keys", "omi", "pad"):
+            self.last_device = name
+
+    def active_device(self) -> str:
+        if self.controller in ("keys", "omi", "pad"):
+            return self.controller
+        return self.last_device if self.last_device in ("keys", "omi", "pad") else "keys"
+
+    def set_controller(self, mode: str, pad_name: str | None = None) -> None:
+        self.controller = mode if mode in ("auto", "keys", "omi", "pad") else "auto"
+        self.set_setting("controller", self.controller)
+        if pad_name:
+            self.pads.preferred = pad_name
+            self.set_setting("pad_name", pad_name)
+        self.log(f"controller: {self.controller}" + (f" {pad_name}" if pad_name else ""))
+
+    def pad_names(self) -> tuple[str, ...]:
+        return self.pads.names()
+
+    def pads_ready(self) -> bool:
+        return pygame_ready()
+
+    def open_ai(self) -> None:
+        """Thought Map, then its AI settings dialog when that window has one."""
+        self.open("thoughts")
+        win = self.transcriber_win
+        opener = getattr(win, "_ai_settings", None)
+        if opener is not None:
+            self.root.after(80, opener)
+
+    def play_axes(self) -> tuple[float, float, str] | None:
+        """Stick from the active extra controller, or None so the game uses the keyboard.
+
+        A resting gamepad does not block the keys. Pendant tilt does, while it is live.
+        """
+        device = self.active_device()
+        if device == "keys":
+            return None
+        if device == "omi":
+            stick = self.stick()
+            return None if stick is None else (stick[0], stick[1], "pendant tilt")
+        if device == "pad":
+            pad = self.pads.latest
+            if pad is None or (abs(pad.x) < 0.08 and abs(pad.y) < 0.08):
+                return None
+            return pad.x, pad.y, "pad"
+        return None
+
+    def _poll_pads(self) -> None:
+        event = self.pads.poll()
+        if event is None:
+            return
+        used = any((
+            event.confirm, event.cancel, event.menu, event.fire, event.shake,
+            event.dpad_x, event.dpad_y, abs(event.x) > 0.35, abs(event.y) > 0.35,
+        ))
+        if used:
+            self.note_device("pad")
+        if self.game is not None:
+            if event.confirm or event.fire:
+                self.game.on_tap("single")
+            if event.cancel:
+                self.game.on_tap("double")
+            if event.menu:
+                self.game.on_hold()
+            if event.shake and hasattr(self.game, "on_shake"):
+                self.game.on_shake()
+            return
+        arcade = self.arcade
+        if arcade is None:
+            return
+        if event.dpad_x:
+            arcade.move(event.dpad_x)
+        elif event.dpad_y:
+            arcade.move(-event.dpad_y)
+        if event.confirm:
+            arcade.activate()
+        if event.cancel:
+            arcade.back()
+        if event.menu:
+            arcade.open_system()
 
     @property
     def _tilt_path(self) -> Path:
@@ -1361,6 +1529,8 @@ class Hub:
             self.last_tap_at = at
         target = self.game if self.game is not None else self.arcade
         if target is not None:  # games and the Arcade menu own the button while open
+            if tap or held:
+                self.note_device("omi")
             if self.voice is not None and kind == "single" and getattr(self.game, "playing", False):
                 self._toggle_voice()  # Voice Flap in play: one tap mutes / unmutes the mic
             elif tap:  # raw taps at once; no gesture decoding delay
@@ -1497,6 +1667,7 @@ class Hub:
             except queue.Empty:
                 break
             self._handle(*event)
+        self._poll_pads()
         now = time.monotonic()
         if self.shake_gate.due(now):
             self.log("shake")
@@ -1571,22 +1742,25 @@ class Hub:
         self.root.after(PUMP_MS, self._pump)
         if self.native is not None:  # one native window and a menu bar icon; the Tk launcher stays hidden
             self.root.withdraw()
-            self.root.createcommand("::tk::mac::ReopenApplication", lambda: self.open("thoughts"))
+            self.root.createcommand("::tk::mac::ReopenApplication", lambda: self.open("arcade"))
             try:
                 from sideband.mac_bar import MenuBar
 
                 self.menubar = MenuBar(self)
             except Exception as exc:
                 self.log(f"menu bar icon unavailable: {exc}")
-            first = self.open_first if self.open_first not in (None, "launcher", "transcriber") else "thoughts"
-            self.root.after(100, lambda: self.open(first or "thoughts"))
         else:
-            if self.open_first:
-                self.root.after(200, lambda: self.open(self.open_first or ""))
-            self.root.lift()
-            self.root.attributes("-topmost", True)
-            self.root.after(800, lambda: self.root.attributes("-topmost", False))
-            self.root.focus_force()
+            self.root.withdraw()
+        first = self.open_first or "arcade"
+        if first == "launcher":
+            first = "arcade"
+        elif first == "transcriber" and self.native is not None:
+            first = "thoughts"
+        self.ready = True
+        self.root.after(100, lambda: self.open(first))
+        from sideband.keys import activate
+
+        self.log(f"keyboard: {activate()}")
         self.root.mainloop()
         return 0
 

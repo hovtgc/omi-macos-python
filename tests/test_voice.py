@@ -51,8 +51,9 @@ class MenuTest(unittest.TestCase):
             self.assertEqual(menu_command(said), command, said)
 
     def test_incomplete_or_unrelated_speech_does_nothing(self) -> None:
-        for said in ("", "open", "play", "play voice", "start", "[unk] the", "hello there"):
+        for said in ("", "open", "play", "start", "[unk] the", "hello there"):
             self.assertIsNone(menu_command(said), said)
+        self.assertEqual(menu_command("play voice"), "play:voice")
 
     def test_spotter_fires_once_per_utterance(self) -> None:
         spot = MenuSpotter()

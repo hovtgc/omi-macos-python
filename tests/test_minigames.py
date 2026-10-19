@@ -74,6 +74,9 @@ class MazeTest(unittest.TestCase):
         self.assertEqual(game.level, 2)
         self.assertGreater(game.cols, cols)
         self.assertFalse(game.won)
+        game.x, game.y = game.goal[0] + 0.5, game.goal[1] + 0.5
+        game.step(1 / 60, Stick())
+        self.assertEqual(game.stars, 3)
 
     def test_tap_brakes(self) -> None:
         game = MarbleMaze(seed=3)
@@ -147,17 +150,25 @@ class LegendTest(unittest.TestCase):
         for game in PLAY:
             if game == "menu":
                 continue
-            self.assertEqual(legend(game, "ready"), (("tap", "START"), ("double", "ARCADE")))
-            self.assertEqual(legend(game, "paused")[1], ("double", "ARCADE"))
-            self.assertEqual(legend(game, "over")[0], ("tap", "AGAIN"))
-            self.assertIn(("hold", "PAUSE"), legend(game))
+            self.assertEqual(legend(game, "ready"), (("enter", "START"), ("esc", "ARCADE")))
+            self.assertEqual(legend(game, "ready", device="omi"), (("tap", "START"), ("double", "ARCADE")))
+            self.assertEqual(legend(game, "paused", device="omi")[1], ("double", "ARCADE"))
+            self.assertEqual(legend(game, "over", device="omi")[0], ("tap", "AGAIN"))
+            self.assertIn(("hold", "PAUSE"), legend(game, device="omi"))
+            self.assertEqual(legend(game, "over")[0], ("enter", "AGAIN"))
 
-    def test_menu_is_tap_to_talk(self) -> None:
+    def test_menu_follows_the_controller(self) -> None:
         from sideband.legend import legend
 
-        self.assertEqual(legend("menu")[0], ("tap", "TALK"))
-        self.assertNotIn("tilt", [control for control, _ in legend("menu")])
-        self.assertIn(("tilt", "STEER · ARROWS"), legend("flap", motion=False))
+        self.assertEqual(legend("menu", device="omi")[0], ("tap", "NEXT"))
+        self.assertEqual(legend("menu", device="keys")[0], ("arrows", "MOVE"))
+        self.assertEqual(legend("menu", device="pad")[1], ("a", "PLAY"))
+        self.assertNotIn("tilt", [control for control, _ in legend("menu", device="omi")])
+        self.assertIn(("tilt", "STEER · ARROWS"), legend("flap", motion=False, device="omi"))
+        self.assertEqual(legend("flap", "ready", device="keys")[0], ("enter", "START"))
+        self.assertIn("space", [control for control, _ in legend("beat", device="keys")])
+        self.assertIn(("hold", "PAUSE"), legend("dash", device="omi"))
+        self.assertEqual(legend("menu")[0], ("arrows", "MOVE"))
 
 
 if __name__ == "__main__":

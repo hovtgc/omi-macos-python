@@ -1,0 +1,125 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1240" height="760" viewBox="0 0 1240 760">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#14001f"/>
+      <stop offset="1" stop-color="#2a0838"/>
+    </linearGradient>
+    <linearGradient id="card" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ff4d6d"/>
+      <stop offset="1" stop-color="#6e1028"/>
+    </linearGradient>
+    <linearGradient id="side" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#3ad0ff"/>
+      <stop offset="1" stop-color="#1a3c9c"/>
+    </linearGradient>
+  </defs>
+  <rect width="1240" height="760" fill="url(#bg)"/>
+  <ellipse cx="620" cy="430" rx="180" ry="90" fill="#ff4d8d"/>
+  <rect y="430" width="1240" height="330" fill="#07010f"/>
+  <g stroke="#3a0a48" fill="none">
+    <path d="M0 500 H1240 M0 560 H1240 M0 640 H1240"/>
+    <path d="M620 430 L200 760 M620 430 L400 760 M620 430 L620 760 M620 430 L840 760 M620 430 L1040 760"/>
+  </g>
+  <g fill="#ff2bd6" font-family="ui-monospace, monospace" font-size="54" font-weight="700">
+    <text x="624" y="78" text-anchor="middle">OMI ARCADE</text>
+  </g>
+  <g fill="#fff6ff" font-family="ui-monospace, monospace" font-size="54" font-weight="700">
+    <text x="618" y="74" text-anchor="middle">OMI ARCADE</text>
+  </g>
+  <text x="28" y="40" fill="#3ddc84" font-family="ui-sans-serif, sans-serif" font-size="14" font-weight="700">OMI LINKED</text>
+  <circle cx="1168" cy="46" r="26" fill="#1b0540" stroke="#ff4fd8" stroke-width="3"/>
+  <text x="1168" y="86" text-anchor="middle" fill="#ffe66d" font-family="ui-sans-serif" font-size="10">TAB</text>
+  <g transform="translate(250,175) scale(0.86)">
+    <rect width="300" height="430" rx="26" fill="url(#side)"/>
+    <text x="150" y="360" text-anchor="middle" fill="#fff" font-family="ui-monospace" font-size="22">OMI FLAP</text>
+    <text x="150" y="400" text-anchor="middle" fill="#c9b6e8" font-family="ui-sans-serif" font-size="14">BEST 12</text>
+  </g>
+  <g transform="translate(470,145)">
+    <rect x="-16" y="-16" width="332" height="462" rx="30" fill="none" stroke="#ff4fd8" stroke-width="6"/>
+    <rect width="300" height="430" rx="26" fill="url(#card)" stroke="#fff" stroke-width="4"/>
+    <text x="16" y="32" fill="#fff" font-family="ui-sans-serif" font-size="12" font-weight="700">BUTTON</text>
+    <rect x="118" y="150" width="22" height="70" fill="#fff"/>
+    <rect x="150" y="120" width="22" height="100" fill="#ffd1dc"/>
+    <rect x="182" y="160" width="22" height="60" fill="#fff"/>
+    <line x1="40" y1="230" x2="260" y2="230" stroke="#ff4d6d" stroke-width="4"/>
+    <text x="150" y="340" text-anchor="middle" fill="#fff" font-family="ui-monospace" font-size="28">BEAT TAP</text>
+    <text x="150" y="378" text-anchor="middle" fill="#ffe66d" font-family="ui-sans-serif" font-size="16" font-weight="700">BEST 2,400</text>
+  </g>
+  <g transform="translate(800,175) scale(0.86)">
+    <rect width="300" height="430" rx="26" fill="#0c5c38"/>
+    <text x="150" y="360" text-anchor="middle" fill="#fff" font-family="ui-monospace" font-size="22">OMI DASH</text>
+    <text x="150" y="400" text-anchor="middle" fill="#c9b6e8" font-family="ui-sans-serif" font-size="14">NEW</text>
+  </g>
+  <g>
+    <rect x="36" y="682" width="1168" height="58" rx="22" fill="#140426" stroke="#ff4fd8" stroke-width="2"/>
+    <text x="80" y="716" fill="#fff" font-family="ui-sans-serif" font-size="16" font-weight="700">ARROWS move    ENTER play    ESC back    TAB settings</text>
+  </g>
+  <g fill="#000" opacity="0.18">
+    <g id="scan">
+      <rect y="0" width="1240" height="2"/>
+      <rect y="6" width="1240" height="2"/>
+    </g>
+    <use href="#scan" y="12"/>
+    <use href="#scan" y="24"/>
+    <use href="#scan" y="36"/>
+    <use href="#scan" y="48"/>
+    <use href="#scan" y="60"/>
+    <use href="#scan" y="72"/>
+    <use href="#scan" y="84"/>
+    <use href="#scan" y="96"/>
+    <use href="#scan" y="108"/>
+    <use href="#scan" y="120"/>
+    <use href="#scan" y="132"/>
+    <use href="#scan" y="144"/>
+    <use href="#scan" y="156"/>
+    <use href="#scan" y="168"/>
+    <use href="#scan" y="180"/>
+    <use href="#scan" y="192"/>
+    <use href="#scan" y="204"/>
+    <use href="#scan" y="216"/>
+    <use href="#scan" y="228"/>
+    <use href="#scan" y="240"/>
+    <use href="#scan" y="252"/>
+    <use href="#scan" y="264"/>
+    <use href="#scan" y="276"/>
+    <use href="#scan" y="288"/>
+    <use href="#scan" y="300"/>
+    <use href="#scan" y="312"/>
+    <use href="#scan" y="324"/>
+    <use href="#scan" y="336"/>
+    <use href="#scan" y="348"/>
+    <use href="#scan" y="360"/>
+    <use href="#scan" y="372"/>
+    <use href="#scan" y="384"/>
+    <use href="#scan" y="396"/>
+    <use href="#scan" y="408"/>
+    <use href="#scan" y="420"/>
+    <use href="#scan" y="432"/>
+    <use href="#scan" y="444"/>
+    <use href="#scan" y="456"/>
+    <use href="#scan" y="468"/>
+    <use href="#scan" y="480"/>
+    <use href="#scan" y="492"/>
+    <use href="#scan" y="504"/>
+    <use href="#scan" y="516"/>
+    <use href="#scan" y="528"/>
+    <use href="#scan" y="540"/>
+    <use href="#scan" y="552"/>
+    <use href="#scan" y="564"/>
+    <use href="#scan" y="576"/>
+    <use href="#scan" y="588"/>
+    <use href="#scan" y="600"/>
+    <use href="#scan" y="612"/>
+    <use href="#scan" y="624"/>
+    <use href="#scan" y="636"/>
+    <use href="#scan" y="648"/>
+    <use href="#scan" y="660"/>
+    <use href="#scan" y="672"/>
+    <use href="#scan" y="684"/>
+    <use href="#scan" y="696"/>
+    <use href="#scan" y="708"/>
+    <use href="#scan" y="720"/>
+    <use href="#scan" y="732"/>
+    <use href="#scan" y="744"/>
+  </g>
+</svg>

@@ -13,12 +13,13 @@ camera just behind and above the ball.
 
 from __future__ import annotations
 
+import math
 import random
 import tkinter as tk
 from dataclasses import dataclass, field
 from typing import Callable
 
-from sideband.legend import draw_ear, draw_legend, legend
+from sideband.legend import device_of, draw_ear, draw_legend, legend
 
 # World
 HALF_W, CEIL = 6.0, 8.0
@@ -58,6 +59,21 @@ RIM = (255, 216, 77)
 BALL_LIT, BALL_BODY, BALL_DARK = (255, 255, 255), (255, 196, 64), (190, 96, 20)
 FLASH = (255, 244, 170)
 CRASH = (255, 90, 80)
+# Pastel cyan/magenta sky city, and the emerald waveform world for Voice Flap.
+FLAP_PAINT = {
+    "sky_top": (255, 186, 224), "sky_horizon": (126, 226, 255),
+    "floor_far": (54, 24, 84), "floor_near": (18, 12, 36),
+    "fog": (48, 28, 72), "wall": (36, 18, 58), "wall_dark": (18, 10, 32),
+    "rim": (122, 246, 255), "rim_b": (255, 122, 214),
+    "grid": (255, 140, 210), "grid_b": (120, 240, 255),
+}
+VOICE_PAINT = {
+    "sky_top": (3, 18, 16), "sky_horizon": (10, 58, 44),
+    "floor_far": (4, 28, 22), "floor_near": (6, 16, 14),
+    "fog": (6, 24, 18), "wall": (8, 36, 28), "wall_dark": (4, 18, 14),
+    "rim": (120, 255, 186), "rim_b": (64, 220, 150),
+    "grid": (40, 180, 120), "grid_b": (160, 255, 210),
+}
 
 
 @dataclass
@@ -71,6 +87,7 @@ class Flight:
     walls: list[list[float]] = field(default_factory=list)  # [z, hole x, hole y]
     score: int = 0
     best: int = 0
+    combo: int = 0
     started: bool = False
     alive: bool = True
     since_death: float = 0.0
@@ -137,8 +154,10 @@ class Flight:
         for wall in self.walls:
             if before < wall[0] <= self.z:
                 if self._through(wall):
-                    self.score += 1
+                    self.combo += 1
+                    self.score += 1 + self.combo // 10
                 else:
+                    self.combo = 0
                     self._crash()
                     return
         if self.y <= RADIUS:
@@ -189,17 +208,26 @@ class GameWindow:
         voice: bool = False,
         voice_status: Callable[[], tuple[bool, str]] = lambda: (False, ""),
         ear: Callable[[], tuple[float | None, str, float]] = lambda: (None, "", 99.0),
+        device_source: Callable[[], str] | None = None,
+        on_device: Callable[[str], None] = lambda _name: None,
+        on_mic: Callable[[], None] | None = None,
     ) -> None:
         self.ear = ear  # the pendant mic: level, last words heard, their age
         self.game = Flight(seed=random.randrange(1 << 30), voice=voice)
         self.voice = voice
+        self.paint = VOICE_PAINT if voice else FLAP_PAINT
         self.voice_status = voice_status
+        self.shake = 0
         self.last_command: tuple[str, float] = ("", -10.0)
         self.clock = 0.0
         self.on_close = on_close
         self.steer_source = steer_source
         self.on_key = on_key
+        self.device_source = device_source
+        self.on_device = on_device
+        self.on_mic = on_mic
         self.keys: set[str] = set()
+        self.pointer = 0.0
         self.flash = 0
         self.trail: list[tuple[float, float, float]] = []
         self.cam = [self.game.x, self.game.y + CAM_UP]
@@ -220,10 +248,19 @@ class GameWindow:
         self.top.bind("<space>", lambda _e: self.on_tap("single"))
         self.top.bind("<Return>", lambda _e: self.on_tap("single"))
         self.top.bind("<Escape>", lambda _e: self.on_hold() if self.playing else self.on_tap("double"))
+        self.top.bind("x", lambda _e: self.on_tap("double") if self.playing else None)
+        self.top.bind("w", lambda _e: self.on_tap("single"))
         self.top.bind("<KeyPress>", self._key_down)
         self.top.bind("<KeyRelease>", lambda e: self.keys.discard(e.keysym.lower()))
+        self.canvas.bind("<Button-1>", lambda _e: self._pointer())
+        self.canvas.bind("<Motion>", self._glide)
         self.top.protocol("WM_DELETE_WINDOW", self.close)
-        self.top.focus_force()
+        from sideband.keys import attach, focus
+
+        attach(self.top)
+        attach(self.canvas)
+        focus(self.top)
+        self._input_line = ""
         self._tick()
 
     def flap(self, strength: float = 1.0) -> None:
@@ -238,8 +275,11 @@ class GameWindow:
         """The Arcade's shared flow: one tap starts / resumes / plays again, double tap goes back; taps flap in play."""
         g, double = self.game, kind == "double"
         if self.playing:
-            if not self.voice:
-                self.flap(BOOST if double else 1.0)
+            if self.voice:
+                if not double and self.on_mic is not None:
+                    self.on_mic()
+                return
+            self.flap(BOOST if double else 1.0)
             return
         if double:
             if g.alive or g.since_death >= RETRY_S:
@@ -274,8 +314,23 @@ class GameWindow:
     def _key_down(self, event: tk.Event) -> None:
         key = event.keysym.lower()
         self.keys.add(key)
+        self.on_device("keys")
         if key in ("c", "x", "i"):
             self.on_key(key)
+
+    def _pointer(self) -> None:
+        self.on_device("keys")
+        self.on_tap("single")
+
+    def _device(self) -> str:
+        if self.device_source is not None:
+            return self.device_source()
+        if self.voice:
+            return "keys"
+        return device_of(self.steer_label)
+
+    def _glide(self, event: tk.Event) -> None:
+        self.pointer = max(-1.0, min(1.0, (event.x / WIDTH - 0.5) * 2.2))
 
     def _steer(self) -> tuple[float, str]:
         if self.voice:
@@ -284,15 +339,24 @@ class GameWindow:
         if pendant is not None:
             return pendant
         steer = (1.0 if self.keys & {"right", "d"} else 0.0) - (1.0 if self.keys & {"left", "a"} else 0.0)
+        if abs(steer) < 0.05 and abs(self.pointer) > 0.08:
+            steer = self.pointer
         return steer, "keys ← →"
 
     def _tick(self) -> None:
+        from sideband.keys import flush_widget
+
+        self._input_line = flush_widget(self.top, self.keys, self.canvas)
         dt = FRAME_MS / 1000
         self.clock += dt
         self.steer_now, self.steer_label = self._steer()
         g = self.game
+        before = g.score
         if not self.paused:
             g.step(dt, self.steer_now)
+        if g.score > before:
+            self.shake = 7
+        self.shake = max(0, self.shake - 1)
         ease = min(1.0, dt / CAM_LAG)
         self.cam[0] += (g.x - self.cam[0]) * ease
         self.cam[1] += (g.y + CAM_UP - self.cam[1]) * ease
@@ -302,6 +366,9 @@ class GameWindow:
             self.trail = []
         self._job = self.top.after(FRAME_MS, self._tick)  # first, so a drawing error cannot stop the loop
         self._draw()
+        from sideband.keys import stamp
+
+        stamp(self.canvas, 12, 16, getattr(self, "_input_line", ""))
 
     # --- drawing ---------------------------------------------------------------------------
 
@@ -315,41 +382,80 @@ class GameWindow:
         return max(-5000.0, min(5000.0, sx)), max(-5000.0, min(5000.0, sy)), dz
 
     def _sky(self) -> None:
-        """Static gradient behind everything, drawn once."""
-        c, bands = self.canvas, 24
+        """Static backdrop, drawn once: a pastel sky city, or an emerald stage with a mic."""
+        c, bands, p = self.canvas, 28, self.paint
+        top, horizon = p["sky_top"], p["sky_horizon"]
         for i in range(bands):
             y0, y1 = HEIGHT / 2 * i / bands, HEIGHT / 2 * (i + 1) / bands + 1
-            c.create_rectangle(0, y0, WIDTH, y1, fill=_mix(SKY_TOP, SKY_HORIZON, i / (bands - 1)), outline="", tags="bg")
+            c.create_rectangle(0, y0, WIDTH, y1, fill=_mix(top, horizon, i / (bands - 1)), outline="", tags="bg")
         for i in range(bands):
-            y0, y1 = HEIGHT / 2 + HEIGHT / 2 * i / bands, HEIGHT / 2 + HEIGHT / 2 * (i + 1) / bands + 1
-            c.create_rectangle(0, y0, WIDTH, y1, fill=_mix(FLOOR_FAR, FLOOR_NEAR, i / (bands - 1)), outline="", tags="bg")
+            y0 = HEIGHT / 2 + HEIGHT / 2 * i / bands
+            y1 = HEIGHT / 2 + HEIGHT / 2 * (i + 1) / bands + 1
+            c.create_rectangle(0, y0, WIDTH, y1, fill=_mix(p["floor_far"], p["floor_near"], i / (bands - 1)), outline="", tags="bg")
         rng = random.Random(7)
-        for _ in range(60):
-            x, y = rng.uniform(0, WIDTH), rng.uniform(0, HEIGHT * 0.42)
-            shade = _mix(SKY_HORIZON, (220, 230, 255), rng.uniform(0.3, 0.9))
-            c.create_oval(x, y, x + 1.6, y + 1.6, fill=shade, outline="", tags="bg")
+        if self.voice:
+            for _ in range(16):
+                x, y = rng.uniform(30, WIDTH - 30), rng.uniform(24, HEIGHT * 0.42)
+                r = rng.uniform(16, 42)
+                c.create_oval(x, y, x + r, y + r * 0.28, outline=_mix((80, 255, 170), horizon, rng.random()), width=2, tags="bg")
+            mx, my = 86, HEIGHT * 0.40
+            c.create_oval(mx - 18, my - 28, mx + 18, my + 10, fill="#1c1c1c", outline="#f0e2c4", width=3, tags="bg")
+            c.create_rectangle(mx - 8, my + 8, mx + 8, my + 34, fill="#141414", outline="#d7c4a2", tags="bg")
+            c.create_line(mx, my + 34, mx, my + 78, fill="#c8b48a", width=3, tags="bg")
+            c.create_line(mx - 26, my + 78, mx + 26, my + 78, fill="#c8b48a", width=3, tags="bg")
+            return
+        c.create_oval(WIDTH * 0.68, 28, WIDTH * 0.68 + 130, 158, fill="#fff3cc", outline="", tags="bg")
+        c.create_oval(WIDTH * 0.68 - 36, 4, WIDTH * 0.68 + 166, 196, outline="#ffd0ec", width=10, tags="bg")
+        for i in range(9):
+            x = 24 + i * (WIDTH / 9.4)
+            h, w = rng.uniform(80, 190), rng.uniform(26, 52)
+            base = HEIGHT * 0.50
+            c.create_rectangle(x, base - h, x + w, base + 6, fill=_mix((62, 24, 92), (18, 48, 96), i / 8), outline="", tags="bg")
+            pipe = (255, 122, 214) if i % 2 else (122, 246, 255)
+            c.create_rectangle(x + w * 0.4, base - h - 52, x + w * 0.58, base - h + 4, fill=_mix(pipe, pipe, 0), outline="", tags="bg")
+        for _ in range(36):
+            x, y, r = rng.uniform(0, WIDTH), rng.uniform(0, HEIGHT * 0.38), rng.uniform(1.2, 2.6)
+            c.create_oval(x, y, x + r, y + r, fill="#fff7fb", outline="", tags="bg")
 
     def _floor(self) -> None:
-        c, g = self.canvas, self.game
+        if self.voice:
+            self._ribbons()
+            return
+        c, g, p = self.canvas, self.game, self.paint
         grid = 3.0
         z = (int(g.z / grid) + 1) * grid - CAM_BACK
         while z < g.z + FAR:
             a, b = self._project(-HALF_W, 0, z), self._project(HALF_W, 0, z)
             if a and b:
-                c.create_line(a[0], a[1], b[0], b[1], fill=_mix((70, 100, 190), FLOOR_FAR, a[2] / FAR), tags="dyn")
+                c.create_line(a[0], a[1], b[0], b[1], fill=_mix(p["grid"], p["floor_far"], a[2] / FAR), tags="dyn")
             z += grid
         x = -HALF_W
         while x <= HALF_W + 1e-6:
             a, b = self._project(x, 0, g.z - CAM_BACK + NEAR + 0.05), self._project(x, 0, g.z + FAR)
             if a and b:
                 edge = abs(x) > HALF_W - 1e-6
-                colour = _mix((120, 150, 240), FLOOR_FAR, 0.2) if edge else _mix((70, 100, 190), FLOOR_FAR, 0.45)
+                colour = _mix(p["grid_b"], p["floor_far"], 0.15) if edge else _mix(p["grid"], p["floor_far"], 0.45)
                 c.create_line(a[0], a[1], b[0], b[1], fill=colour, width=2 if edge else 1, tags="dyn")
             x += 2.0
         for side in (-HALF_W, HALF_W):  # ceiling rails
             a, b = self._project(side, CEIL, g.z - CAM_BACK + NEAR + 0.05), self._project(side, CEIL, g.z + FAR)
             if a and b:
-                c.create_line(a[0], a[1], b[0], b[1], fill=_mix((90, 110, 190), SKY_HORIZON, 0.4), tags="dyn")
+                c.create_line(a[0], a[1], b[0], b[1], fill=_mix(p["rim"], p["sky_horizon"], 0.35), tags="dyn")
+
+    def _ribbons(self) -> None:
+        """Waveform ribbons under the voice bird."""
+        c, g = self.canvas, self.game
+        for lane, amp, colour in ((-2.4, 0.55, (30, 170, 120)), (0.0, 0.95, (90, 255, 180)), (2.4, 0.6, (20, 120, 90))):
+            pts: list[float] = []
+            z = g.z - 1
+            while z < g.z + FAR:
+                y = 1.15 + amp * math.sin(z * 0.45 + lane + self.clock * 3)
+                p = self._project(lane, y, z)
+                if p:
+                    pts += [p[0], p[1]]
+                z += 1.4
+            if len(pts) >= 4:
+                c.create_line(*pts, fill=_mix(colour, colour, 0), smooth=True, width=4, tags="dyn")
 
     def _wall(self, wz: float, hx: float, hy: float) -> None:
         c = self.canvas
@@ -358,9 +464,10 @@ class GameWindow:
         gap0, gap1 = self._project(hx - h, hy + h, wz), self._project(hx + h, hy - h, wz)
         if not (corner0 and corner1 and gap0 and gap1):
             return
+        p = self.paint
         fog = (corner0[2] / FAR) ** 0.8
-        face_rgb = _blend(WALL, FOG, fog)
-        face, shade = _mix(face_rgb, face_rgb, 0), _mix(WALL_DARK, FOG, fog)
+        face_rgb = _blend(p["wall"], p["fog"], fog)
+        face, shade = _mix(face_rgb, face_rgb, 0), _mix(p["wall_dark"], p["fog"], fog)
         x0, y0, x1, y1 = corner0[0], corner0[1], corner1[0], corner1[1]
         gx0, gy0, gx1, gy1 = gap0[0], gap0[1], gap1[0], gap1[1]
         for rect in ((x0, y0, gx0, y1), (gx1, y0, x1, y1), (gx0, y0, gx1, gy0), (gx0, gy1, gx1, y1)):
@@ -369,10 +476,18 @@ class GameWindow:
         bevel = max(2.0, (gx1 - gx0) * 0.06)
         c.create_rectangle(gx0, gy1 - bevel, gx1, gy1, fill=shade, outline="", tags="dyn")
         c.create_rectangle(gx1 - bevel, gy0, gx1, gy1, fill=shade, outline="", tags="dyn")
-        glow = _mix(RIM, FOG, fog * 0.9)
+        glow = _mix(p["rim"], p["fog"], fog * 0.85)
         width = max(1, round(6 * (1 - fog)))
-        c.create_rectangle(gx0, gy0, gx1, gy1, outline=_mix(RIM, face_rgb, 0.6), width=width + 4, tags="dyn")
+        c.create_rectangle(gx0, gy0, gx1, gy1, outline=_mix(p["rim_b"], face_rgb, 0.45), width=width + 6, tags="dyn")
         c.create_rectangle(gx0, gy0, gx1, gy1, outline=glow, width=width, tags="dyn")
+        span = max(1.0, x1 - x0)
+        step = max(16.0, span / 12)
+        pipe = x0 + step * 0.5
+        while pipe < x1:
+            if not (gx0 - 4 < pipe < gx1 + 4):
+                colour = p["rim"] if int(pipe / step) % 2 == 0 else p["rim_b"]
+                c.create_line(pipe, y0, pipe, y1, fill=_mix(colour, p["fog"], fog), width=3, tags="dyn")
+            pipe += step
 
     def _ball(self) -> None:
         c, g = self.canvas, self.game
@@ -386,14 +501,14 @@ class GameWindow:
             lift = max(0.0, min(1.0, g.y / CEIL))
             w = r * (1.3 - 0.7 * lift)
             c.create_oval(floor[0] - w, floor[1] - w * 0.28, floor[0] + w, floor[1] + w * 0.28,
-                          fill=_mix((4, 6, 14), FLOOR_NEAR, 0.25 + 0.6 * lift), outline="", tags="dyn")
+                          fill=_mix((8, 6, 16), self.paint["floor_near"], 0.25 + 0.6 * lift), outline="", tags="dyn")
         for i, (tx, ty, tz) in enumerate(self.trail[:-1]):
             p = self._project(tx, ty, tz)
             if p:
                 k = (i + 1) / len(self.trail)
                 tr = FOCAL * BALL_R * 0.55 * k / p[2]
                 c.create_oval(p[0] - tr, p[1] - tr, p[0] + tr, p[1] + tr,
-                              fill=_mix(SKY_HORIZON, BALL_BODY, 0.25 + 0.5 * k), outline="", tags="dyn")
+                              fill=_mix(self.paint["sky_horizon"], BALL_BODY, 0.25 + 0.5 * k), outline="", tags="dyn")
         if not g.alive:
             body, dark = CRASH, (120, 20, 20)
         elif self.flash:
@@ -401,8 +516,15 @@ class GameWindow:
         else:
             body, dark = BALL_BODY, BALL_DARK
         self.flash = max(0, self.flash - 1)
-        c.create_oval(sx - r * 1.35, sy - r * 1.35, sx + r * 1.35, sy + r * 1.35,
-                      fill="", outline=_mix(body, SKY_HORIZON, 0.55), width=3, tags="dyn")
+        if self.voice:
+            self._wave_bird(sx, sy, r, body)
+            return
+        wing = math.sin(self.clock * 16) * (0.45 if self.flash else 0.12)
+        c.create_polygon(sx, sy, sx - r * 2.4, sy - r * (0.15 + wing), sx - r * 0.15, sy + r * 0.4,
+                         fill="#f8e7a8", outline="#fff6d2", tags="dyn")
+        c.create_polygon(sx, sy, sx + r * 2.4, sy - r * (0.15 - wing), sx + r * 0.15, sy + r * 0.4,
+                         fill="#e8c15a", outline="#fff6d2", tags="dyn")
+        c.create_oval(sx - r * 1.7, sy - r * 1.7, sx + r * 1.7, sy + r * 1.7, outline="#fff1b0", width=6, tags="dyn")
         steps = 7  # shaded sphere: rings from the dark rim to a lit spot up and to the left
         for i in range(steps):
             t = i / (steps - 1)
@@ -411,16 +533,29 @@ class GameWindow:
             colour = "#%02x%02x%02x" % (_blend(dark, body, t * 1.6) if t < 0.62 else _blend(body, BALL_LIT, (t - 0.62) / 0.38))
             c.create_oval(sx + ox - rr, sy + oy - rr, sx + ox + rr, sy + oy + rr, fill=colour, outline="", tags="dyn")
 
+    def _wave_bird(self, sx: float, sy: float, r: float, body: tuple[int, int, int]) -> None:
+        """A bird drawn from glowing sound-wave rings."""
+        c = self.canvas
+        for i, scale in enumerate((2.1, 1.55, 1.05)):
+            rr = r * scale
+            c.create_oval(sx - rr, sy - rr * 0.62, sx + rr, sy + rr * 0.62, outline=_mix((80, 255, 170), body, i / 3), width=3, tags="dyn")
+        c.create_oval(sx - r * 0.45, sy - r * 0.45, sx + r * 0.45, sy + r * 0.45, fill="#e8fff4", outline="", tags="dyn")
+        flap = math.sin(self.clock * 10) * r * 0.35
+        c.create_line(sx - r * 0.2, sy, sx - r * 1.6, sy - r * 0.8 + flap, fill="#b8ffe0", width=3, smooth=True, tags="dyn")
+        c.create_line(sx + r * 0.2, sy, sx + r * 1.6, sy - r * 0.8 - flap, fill="#b8ffe0", width=3, smooth=True, tags="dyn")
+
     def _hud(self) -> None:
         c, g = self.canvas, self.game
         cx = WIDTH / 2
-        c.create_text(cx + 2, 48, text=str(g.score), fill="#000000", font=("Helvetica", 44, "bold"), tags="dyn")
-        c.create_text(cx, 46, text=str(g.score), fill="white", font=("Helvetica", 44, "bold"), tags="dyn")
+        chain = f"  ×{g.combo}" if g.combo > 1 else ""
+        c.create_text(cx + 2, 48, text=f"{g.score}{chain}", fill="#000000", font=("Helvetica", 44, "bold"), tags="dyn")
+        c.create_text(cx, 46, text=f"{g.score}{chain}", fill="white", font=("Helvetica", 44, "bold"), tags="dyn")
         if g.best:
             c.create_text(WIDTH - 20, 26, anchor="e", text=f"best {g.best}", fill="#c9d4ff", font=("Helvetica", 14), tags="dyn")
         name = "voice" if self.voice else "flap"
+        device = self._device()
         c.create_rectangle(0, HEIGHT - 40, WIDTH, HEIGHT, fill="#0a0f22", outline="", stipple="gray50", tags="dyn")
-        draw_legend(c, WIDTH / 2 - 70, HEIGHT - 20, legend(name, motion=self.voice or self.steer_label != "keys ← →"),
+        draw_legend(c, WIDTH / 2 - 70, HEIGHT - 20, legend(name, device=device, motion=device == "omi"),
                     size=12, max_width=WIDTH - 200)
         if not self.voice:  # live steering gauge
             bx = WIDTH - 150
@@ -431,14 +566,14 @@ class GameWindow:
             self._voice_hud()
         draw_ear(c, WIDTH - 10, HEIGHT - 56, *self.ear())
         if not g.started:
-            hint = ("then tap for the mic and say go left · right · up · down" if self.voice
+            hint = ("arrows or say go left · right · up · down · space for the mic" if self.voice
                     else "fly the ball through the glowing gaps")
-            self._banner("VOICE FLAP" if self.voice else "OMI FLAP 3D", hint, legend(name, "ready"), "#ffd23f")
+            self._banner("VOICE FLAP" if self.voice else "OMI FLAP 3D", hint, legend(name, "ready", device=device), "#ffd23f")
         elif not g.alive:
             c.create_rectangle(6, 6, WIDTH - 6, HEIGHT - 6, outline="#ff4d4d", width=12, tags="dyn")
-            self._banner("CRASHED", f"score {g.score}  ·  best {g.best}", legend(name, "over"), "#ff6b5b")
+            self._banner("CRASHED", f"score {g.score}  ·  best {g.best}", legend(name, "over", device=device), "#ff6b5b")
         elif self.paused:
-            self._banner("PAUSED", "", legend(name, "paused"), "#7fd4ff")
+            self._banner("PAUSED", "", legend(name, "paused", device=device), "#7fd4ff")
 
     def _banner(self, title: str, text: str, items: tuple[tuple[str, str], ...], colour: str) -> None:
         c, cx, cy = self.canvas, WIDTH / 2, HEIGHT / 2
@@ -452,7 +587,8 @@ class GameWindow:
     def _voice_hud(self) -> None:
         c = self.canvas
         listening, heard = self.voice_status()
-        badge, colour = ("● LISTENING", "#3ddc84") if listening else ("MUTED · tap pendant", "#ff6b6b")
+        muted = "MUTED · space" if self._device() == "keys" else "MUTED · tap"
+        badge, colour = ("● LISTENING", "#3ddc84") if listening else (muted, "#ff6b6b")
         c.create_rectangle(14, 14, 214, 44, fill="#0a0f22", outline=colour, width=2, tags="dyn")
         c.create_text(114, 29, text=badge, fill=colour, font=("Helvetica", 14, "bold"), tags="dyn")
         if heard:
@@ -460,7 +596,7 @@ class GameWindow:
         word, at = self.last_command
         age = self.clock - at
         if word and age < 0.7:
-            fade = _mix((255, 216, 77), SKY_HORIZON, age / 0.7)
+            fade = _mix((255, 216, 77), self.paint["sky_horizon"], age / 0.7)
             cx, cy = WIDTH / 2, HEIGHT / 2 - 150
             arrows = {"left": "◀", "right": "▶", "up": "▲", "down": "▼", "stop": "■"}
             c.create_text(cx, cy, text=arrows.get(word, word), fill=fade, font=("Helvetica", 64, "bold"), tags="dyn")
@@ -481,6 +617,8 @@ class GameWindow:
             else:
                 self._ball()
         self._hud()
+        if self.shake:
+            c.move("dyn", random.randint(-self.shake, self.shake), random.randint(-self.shake // 2, self.shake // 2))
 
     def close(self) -> None:
         self.top.after_cancel(self._job)

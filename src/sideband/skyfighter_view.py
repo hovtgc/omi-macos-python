@@ -14,7 +14,7 @@ import tkinter as tk
 from typing import TYPE_CHECKING, Callable
 
 from sideband.legend import draw_ear, draw_legend, legend
-from sideband.meshes import ENEMY, SPITFIRE, Mesh, Vec, apply, bomber, dot, face_normal, fighter, propeller, rotation, unit
+from sideband.meshes import ENEMY, Mesh, Vec, apply, bomber, dot, face_normal, fighter, propeller, rotation, unit
 from sideband.minigames import Stick
 from sideband.skyfighter import Dogfight
 
@@ -24,12 +24,13 @@ if TYPE_CHECKING:
 W, H = 960, 640
 FOCAL = 560.0
 NEAR, FAR = 1.5, 420.0
-FRAME_MS = 22
+FRAME_MS = 16
 CAM_BACK, CAM_UP = 17.0, 4.0
-SUN = unit((0.45, 0.85, -0.35))
-SKY_TOP, SKY_LOW = (70, 120, 190), (196, 214, 226)
-HAZE = (190, 206, 220)
-SEA, LAND = (46, 88, 112), (88, 110, 70)
+SUN = unit((0.25, 0.72, -0.55))
+SKY_TOP, SKY_LOW = (92, 42, 78), (255, 156, 64)
+HAZE = (255, 176, 96)
+SEA, LAND = (214, 112, 58), (255, 186, 92)
+MUSTANG = {"body": (198, 206, 214), "belly": (236, 238, 242), "wing": (168, 176, 186), "nose": (64, 70, 78)}
 
 
 def _rgb(c: tuple[float, float, float]) -> str:
@@ -49,7 +50,9 @@ class FighterWindow:
         self.top.resizable(False, False)
         self.canvas = tk.Canvas(self.top, width=W, height=H, highlightthickness=0, bg=_rgb(SKY_TOP))
         self.canvas.pack()
-        self.models = {"player": fighter(SPITFIRE), "fighter": fighter(ENEMY, roundels=False), "bomber": bomber()}
+        self.models = {"player": fighter(MUSTANG), "fighter": fighter(ENEMY, roundels=False), "bomber": bomber()}
+        self.shake = 0
+        self._hurt = 0.0
         self.keys: set[str] = set()
         self.state = "ready"  # ready → playing ⇄ paused → over
         self.cam = [0.0, 20.0 + CAM_UP]
@@ -58,12 +61,18 @@ class FighterWindow:
         self.rng = random.Random()
         self.recorded = False
         self.new_game()
-        self.clouds = [self._cloud(self.rng.uniform(0, FAR)) for _ in range(26)]
+        self.clouds = [self._cloud(self.rng.uniform(0, FAR)) for _ in range(42)]
         self._sky()
         self.top.bind("<KeyPress>", self._key_down)
         self.top.bind("<KeyRelease>", lambda e: self.keys.discard(e.keysym.lower()))
+        self.canvas.bind("<Button-1>", lambda _e: self._pointer())
         self.top.protocol("WM_DELETE_WINDOW", self.close)
-        self.top.focus_force()
+        from sideband.keys import attach, focus
+
+        attach(self.top)
+        attach(self.canvas)
+        focus(self.top)
+        self._input_line = ""
         self._last = time.monotonic()
         self._tick()
 
@@ -106,17 +115,25 @@ class FighterWindow:
     def _key_down(self, event: tk.Event) -> None:
         key = event.keysym.lower()
         self.keys.add(key)
+        self.hub.note_device("keys")
+        # Arrows and WASD fly the plane. Space and Enter fire, so climbing does not shoot.
         if key in ("space", "return"):
             self.on_tap("single")
+        elif key == "x" and self.state == "playing":
+            self.on_tap("double")
         elif key == "escape":
             self.on_tap("double") if self.state != "playing" else self.on_hold()
-        elif key == "b":
+        elif key == "b" and self.state == "playing":
             self.on_shake()
         elif key == "c":
             self.hub.recentre()
 
+    def _pointer(self) -> None:
+        self.hub.note_device("keys")
+        self.on_tap("single")
+
     def _stick(self) -> tuple[float, float, str]:
-        pendant = self.hub.stick()
+        pendant = self.hub.play_axes()
         if pendant is not None:
             return pendant
         x = (1.0 if self.keys & {"right", "d"} else 0.0) - (1.0 if self.keys & {"left", "a"} else 0.0)
@@ -127,13 +144,19 @@ class FighterWindow:
 
     def _tick(self) -> None:
         self._job = self.top.after(FRAME_MS, self._tick)
+        from sideband.keys import flush_widget
+
+        self._input_line = flush_widget(self.top, self.keys, self.canvas)
         now = time.monotonic()
         dt = min(0.05, now - self._last)
         self._last = now
         g = self.game
         x, y, self.source = self._stick()
         if self.state == "playing":
+            before = g.score
             g.step(dt, Stick(x, y))
+            if g.score > before or g.hurt > self._hurt:
+                self.shake = 8
             if g.over:
                 self.state = "over"
                 self.over_at = time.monotonic()
@@ -145,10 +168,15 @@ class FighterWindow:
         self.cam[1] += (g.y + CAM_UP - self.cam[1]) * ease
         self.cam_roll += (g.bank * 0.55 - self.cam_roll) * min(1.0, dt * 3)
         self.prop += dt * 40
+        self._hurt = g.hurt
+        self.shake = max(0, self.shake - 1)
         for cloud in self.clouds:
             if cloud[2] < g.z - 10:
                 cloud[:] = self._cloud(FAR * 0.9)
         self._draw()
+        from sideband.keys import stamp
+
+        stamp(self.canvas, 12, 16, getattr(self, "_input_line", ""))
 
     def _cloud(self, ahead: float) -> list[float]:
         return [self.rng.uniform(-150, 150), self.rng.uniform(20, 90), self.game.z + ahead, self.rng.uniform(8, 22)]
@@ -186,9 +214,12 @@ class FighterWindow:
             out.append((depth, "poly", [c for xy in screen for c in xy], _rgb(shade)))
 
     def _sky(self) -> None:
-        for i in range(20):
-            self.canvas.create_rectangle(0, i * H / 20, W, (i + 1) * H / 20 + 1,
-                                         fill=_rgb(_mix(SKY_TOP, SKY_LOW, i / 19)), outline="", tags="sky")
+        c = self.canvas
+        for i in range(24):
+            c.create_rectangle(0, i * H / 24, W, (i + 1) * H / 24 + 1,
+                               fill=_rgb(_mix(SKY_TOP, SKY_LOW, i / 23)), outline="", tags="sky")
+        c.create_oval(W * 0.62, H * 0.22, W * 0.62 + 110, H * 0.22 + 110, fill="#ffe7a0", outline="", tags="sky")
+        c.create_oval(W * 0.62 - 28, H * 0.22 - 28, W * 0.62 + 138, H * 0.22 + 138, outline="#ffd27a", width=14, tags="sky")
 
     def _ground(self) -> None:
         c, g = self.canvas, self.game
@@ -207,7 +238,7 @@ class FighterWindow:
             a = self._to_camera((g.x - 400, 0.0, z))
             b = self._to_camera((g.x + 400, 0.0, z))
             if a[2] > NEAR and b[2] > NEAR:
-                shade = _rgb(_mix((70, 120, 145), SEA, z / (g.z + FAR)))
+                shade = _rgb(_mix((255, 210, 140), SEA, 0.35 + 0.4 * min(1.0, (z - g.z) / FAR)))
                 c.create_line(*self._project(a), *self._project(b), fill=shade, tags="dyn")
         for x in range(-240, 241, 60):
             a, b = self._to_camera((x, 0.0, g.z + 3)), self._to_camera((x, 0.0, g.z + FAR))
@@ -224,7 +255,7 @@ class FighterWindow:
             if 45 < v[2] < FAR:  # closer than that a cloud would swallow the screen
                 sx, sy = self._project(v)
                 r = FOCAL * size / v[2]
-                items.append((v[2], "cloud", (sx, sy, r), _rgb(_mix((250, 250, 252), HAZE, v[2] / FAR))))
+                items.append((v[2], "cloud", (sx, sy, r), _rgb(_mix((255, 236, 214), HAZE, v[2] / FAR))))
         for e in g.enemies:
             wobble = math.sin(g.clock * 1.3 + e.phase) * 0.5
             self._mesh(self.models[e.kind], (e.x, e.y, e.z), rotation(yaw=math.pi, roll=-wobble), e.hit_flash > 0, items)
@@ -232,10 +263,15 @@ class FighterWindow:
                 self._mesh(propeller(-self.prop), (e.x, e.y, e.z), rotation(yaw=math.pi), False, items)
         for s in g.shots:
             a = self._to_camera((s.x, s.y, s.z))
-            b = self._to_camera((s.x - s.vx * 0.03, s.y - s.vy * 0.03, s.z - s.vz * 0.03))
+            b = self._to_camera((s.x - s.vx * 0.09, s.y - s.vy * 0.09, s.z - s.vz * 0.09))
             if a[2] > NEAR and b[2] > NEAR:
-                colour = "#ff7a3d" if s.enemy else "#fff1a8"
-                items.append((a[2], "line", [*self._project(a), *self._project(b)], colour))
+                colour = "#ffb087" if s.enemy else "#fff6c8"
+                items.append((a[2], "streak", [*self._project(a), *self._project(b)], colour))
+        for e in g.enemies:
+            a = self._to_camera((e.x, e.y - 0.2, e.z + 4))
+            b = self._to_camera((e.x, e.y - 0.2, e.z + 22))
+            if a[2] > NEAR and b[2] > NEAR:
+                items.append(((a[2] + b[2]) / 2, "trail", [*self._project(a), *self._project(b)], "#f6d7b0"))
         for boom in g.booms:
             v = self._to_camera((boom.x, boom.y, boom.z))
             if v[2] > NEAR:
@@ -250,13 +286,16 @@ class FighterWindow:
         for depth, kind, data, colour in sorted(items, key=lambda item: -item[0]):
             if kind == "poly":
                 c.create_polygon(data, fill=colour, outline=colour, tags="dyn")
-            elif kind == "line":
+            elif kind == "streak":
+                c.create_line(data, fill="#ffe08a", width=7, tags="dyn")
                 c.create_line(data, fill=colour, width=3, tags="dyn")
+            elif kind == "trail":
+                c.create_line(data, fill=colour, width=2, tags="dyn")
             elif kind == "cloud":
                 sx, sy, r = data
-                for ox, oy, k in ((-0.6, 0.1, 0.7), (0.5, 0.15, 0.75), (0.0, -0.15, 1.0)):
-                    c.create_oval(sx + ox * r - k * r, sy + oy * r - k * r * 0.55, sx + ox * r + k * r, sy + oy * r + k * r * 0.55,
-                                  fill=colour, outline="", stipple="gray75", tags="dyn")
+                for ox, oy, k in ((-0.85, 0.2, 0.72), (-0.15, -0.05, 0.95), (0.55, 0.22, 0.78), (0.15, -0.35, 0.55)):
+                    c.create_oval(sx + ox * r - k * r, sy + oy * r - k * r * 0.48, sx + ox * r + k * r, sy + oy * r + k * r * 0.48,
+                                  fill=colour, outline="", tags="dyn")
             else:
                 sx, sy, r, age = data
                 for k, col in ((1.0, "#5a5048"), (0.7, "#ff8a1c"), (0.4, "#ffe27a")):
@@ -264,6 +303,9 @@ class FighterWindow:
                         c.create_oval(sx - r * k, sy - r * k, sx + r * k, sy + r * k, fill=col, outline="",
                                       stipple="gray50" if age > 0.6 else "", tags="dyn")
         self._hud()
+        punch = self.shake or int(self.game.shake * 16)
+        if punch:
+            self.canvas.move("dyn", self.rng.randint(-punch, punch), self.rng.randint(-punch, punch))
 
     # --- HUD ------------------------------------------------------------------------------
 
@@ -277,7 +319,8 @@ class FighterWindow:
             c.create_line(sx + 8, sy, sx + 26, sy, fill="#ffe27a", width=2, tags="dyn")
         c.create_rectangle(0, 0, W, 44, fill="#0b1633", outline="", stipple="gray50", tags="dyn")
         c.create_text(18, 22, anchor="w", text=f"{g.score:,}", fill="white", font=("Helvetica", 22, "bold"), tags="dyn")
-        c.create_text(150, 22, anchor="w", text=f"✈ {g.kills} down · wave {g.wave}", fill="#cfe0ff", font=("Helvetica", 15, "bold"), tags="dyn")
+        chain = f"  ×{g.combo}" if g.combo else ""
+        c.create_text(150, 22, anchor="w", text=f"✈ {g.kills} down · wave {g.wave}{chain}", fill="#cfe0ff", font=("Helvetica", 15, "bold"), tags="dyn")
         bar = 220 * g.health / 100
         colour = "#3ddc84" if g.health > 50 else "#ffb347" if g.health > 25 else "#ff4d4d"
         c.create_rectangle(W - 250, 14, W - 30, 30, outline="#cfe0ff", width=2, tags="dyn")
@@ -285,15 +328,16 @@ class FighterWindow:
         roll = "ROLL READY · shake" if not g.roll_ready and not g.roll else ("ROLLING!" if g.roll else f"roll in {g.roll_ready:.1f}s")
         c.create_text(W - 260, 22, anchor="e", text=roll, fill="#ffe27a", font=("Helvetica", 13, "bold"), tags="dyn")
         c.create_rectangle(0, H - 36, W, H, fill="#0b1633", outline="", stipple="gray50", tags="dyn")
-        draw_legend(c, W / 2, H - 18, legend("fighter", motion=self.source != "keys"), size=12, max_width=W - 24)
+        device = self.hub.active_device()
+        draw_legend(c, W / 2, H - 18, legend("fighter", device=device, motion=device == "omi"), size=12, max_width=W - 24)
         draw_ear(c, W - 10, H - 54, *self.hub.ear_state())
         if self.state == "ready":
-            self._banner("SKY ACE 1943", "shoot down the bombers · watch your six", legend("fighter", "ready"), "#ffcf3d")
+            self._banner("SKY ACE 1943", "shoot down the bombers · watch your six", legend("fighter", "ready", device=device), "#ffcf3d")
         elif self.state == "paused":
-            self._banner("PAUSED", "", legend("fighter", "paused"), "#7fd4ff")
+            self._banner("PAUSED", "", legend("fighter", "paused", device=device), "#7fd4ff")
         elif self.state == "over":
             best = int(self.hub.best("fighter") or 0)
-            self._banner("SHOT DOWN", f"score {g.score:,} · {g.kills} kills · best {best:,}", legend("fighter", "over"), "#ff6b5b")
+            self._banner("SHOT DOWN", f"score {g.score:,} · {g.kills} kills · best {best:,}", legend("fighter", "over", device=device), "#ff6b5b")
 
     def _banner(self, title: str, text: str, items: tuple[tuple[str, str], ...], colour: str) -> None:
         c = self.canvas

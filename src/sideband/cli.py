@@ -10,6 +10,7 @@ from pathlib import Path
 
 from sideband.app import SidebandApp
 from sideband.log import HoldLog
+from sideband.platform import OPEN_NAMES
 
 RADIO_COMMANDS = ("scan", "hold", "services", "ui", "firmware", "doctor")
 
@@ -105,11 +106,11 @@ def _parser() -> argparse.ArgumentParser:
     firmware.add_argument("--yes-flash", action="store_true", help="Really install. The bootloader has no rollback.")
 
     opener = sub.add_parser("open", help="Open a Sideband app, reusing the running launcher (for Shortcuts, Raycast, Alfred).")
-    opener.add_argument("name", choices=("launcher", "thoughts", "transcriber", "controls", "arcade", "bluetooth", "flap", "voice", "corn", "marble", "dodger", "catch", "fighter"))
+    opener.add_argument("name", choices=OPEN_NAMES)
 
     ui = sub.add_parser("ui", help="Open the Sideband launcher (Transcriber, Controls, Omi Flap 3D, Voice Flap).")
     ui.add_argument("--address", default=None, help="Default: the last pendant used, else the first Omi found by a scan.")
-    ui.add_argument("--open", default=None, choices=("thoughts", "transcriber", "controls", "arcade", "bluetooth", "flap", "voice", "corn", "marble", "dodger", "catch", "fighter"), help="Open one app right away.")
+    ui.add_argument("--open", default=None, choices=OPEN_NAMES, help="Open one app right away. Default when you just launch: the arcade.")
 
     hold = sub.add_parser("hold", help="Keep notifications open and reconnect after a gap.")
     hold.add_argument("--address", required=True)
