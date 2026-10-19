@@ -16,7 +16,7 @@ from sideband.minigames import Stick
 SPEED = 42.0  # forward, units per second
 HALF_W, LOW, HIGH = 34.0, 5.0, 44.0  # corridor the player can fly in
 SIDE_SPEED, CLIMB_SPEED = 30.0, 20.0
-RESPONSE = 5.0  # how fast velocity follows the stick
+RESPONSE = 9.0  # how fast velocity follows the stick
 SPAWN_AHEAD = 260.0
 FIRE_EVERY = 0.07
 BULLET_SPEED = 170.0
@@ -94,6 +94,8 @@ class Dogfight:
     shots: list[Shot] = field(default_factory=list)
     booms: list[Boom] = field(default_factory=list)
     since_spawn: float = 0.0
+    combo: int = 0
+    shake: float = 0.0
 
     def __post_init__(self) -> None:
         self.rng = random.Random(self.seed)
@@ -132,8 +134,9 @@ class Dogfight:
         if self.over or not self.started:
             return
         self.clock += dt
-        self.wave = 1 + int(self.clock // 40)
+        self.wave = 1 + int(self.clock // 32)
         self.hurt = max(0.0, self.hurt - dt)
+        self.shake = max(0.0, self.shake - dt)
         self.roll_ready = max(0.0, self.roll_ready - dt)
         if self.roll:
             self.roll += dt / ROLL_S
@@ -171,7 +174,7 @@ class Dogfight:
 
     def _spawn(self, dt: float) -> None:
         self.since_spawn += dt
-        every = max(0.9, 3.2 - 0.35 * self.wave)
+        every = max(0.72, 2.8 - 0.32 * self.wave)
         if self.since_spawn < every or len(self.enemies) >= 4 + self.wave:
             return
         self.since_spawn = 0.0
@@ -224,7 +227,10 @@ class Dogfight:
                     if e.hp <= 0:
                         self.enemies.remove(e)
                         self.kills += 1
-                        self.score += KINDS[e.kind][2]
+                        self.combo += 1
+                        mult = 1 + (self.combo - 1) // 3
+                        self.score += KINDS[e.kind][2] * mult
+                        self.shake = min(0.45, 0.16 + 0.04 * self.combo)
                         self.booms.append(Boom(e.x, e.y, e.z, size=1.0 if e.kind == "fighter" else 2.2))
                     break
         for e in list(self.enemies):
@@ -237,6 +243,8 @@ class Dogfight:
     def _hurt(self, amount: float) -> None:
         self.health -= amount
         self.hurt = 0.6
+        self.combo = 0
+        self.shake = max(self.shake, 0.32)
 
 
 def _near(shot: Shot, x: float, y: float, z: float, radius: float) -> bool:

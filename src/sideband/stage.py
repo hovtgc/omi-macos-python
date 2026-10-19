@@ -192,6 +192,23 @@ def stick() -> tuple[float, float]:
     return x, y
 
 
+def aim(keys: tuple[float, float]) -> tuple[float, float]:
+    """Keys win on an axis. A mouse that has left the middle fills an axis they are not holding."""
+    x, y = keys
+    try:
+        from ursina import mouse
+
+        px = max(-1.0, min(1.0, float(mouse.position[0]) * 2.4))
+        py = max(-1.0, min(1.0, float(mouse.position[1]) * 2.4))
+    except Exception:
+        return x, y
+    if abs(x) < 0.05 and abs(px) > 0.12:
+        x = px
+    if abs(y) < 0.05 and abs(py) > 0.12:
+        y = py
+    return x, y
+
+
 def lock(on: bool) -> None:
     from ursina import mouse
 

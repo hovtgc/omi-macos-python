@@ -292,8 +292,9 @@ class FighterWindow:
                         c.create_oval(sx - r * k, sy - r * k, sx + r * k, sy + r * k, fill=col, outline="",
                                       stipple="gray50" if age > 0.6 else "", tags="dyn")
         self._hud()
-        if self.shake:
-            self.canvas.move("dyn", self.rng.randint(-self.shake, self.shake), self.rng.randint(-self.shake, self.shake))
+        punch = self.shake or int(self.game.shake * 16)
+        if punch:
+            self.canvas.move("dyn", self.rng.randint(-punch, punch), self.rng.randint(-punch, punch))
 
     # --- HUD ------------------------------------------------------------------------------
 
@@ -307,7 +308,8 @@ class FighterWindow:
             c.create_line(sx + 8, sy, sx + 26, sy, fill="#ffe27a", width=2, tags="dyn")
         c.create_rectangle(0, 0, W, 44, fill="#0b1633", outline="", stipple="gray50", tags="dyn")
         c.create_text(18, 22, anchor="w", text=f"{g.score:,}", fill="white", font=("Helvetica", 22, "bold"), tags="dyn")
-        c.create_text(150, 22, anchor="w", text=f"✈ {g.kills} down · wave {g.wave}", fill="#cfe0ff", font=("Helvetica", 15, "bold"), tags="dyn")
+        chain = f"  ×{g.combo}" if g.combo else ""
+        c.create_text(150, 22, anchor="w", text=f"✈ {g.kills} down · wave {g.wave}{chain}", fill="#cfe0ff", font=("Helvetica", 15, "bold"), tags="dyn")
         bar = 220 * g.health / 100
         colour = "#3ddc84" if g.health > 50 else "#ffb347" if g.health > 25 else "#ff4d4d"
         c.create_rectangle(W - 250, 14, W - 30, 30, outline="#cfe0ff", width=2, tags="dyn")

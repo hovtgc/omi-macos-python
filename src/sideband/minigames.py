@@ -63,6 +63,8 @@ class MarbleMaze:
     elapsed: float = 0.0
     total: float = 0.0
     won: bool = False
+    bumps: int = 0
+    stars: int = 0
     walls: list[list[int]] = field(default_factory=list)
 
     def __post_init__(self) -> None:
@@ -84,6 +86,8 @@ class MarbleMaze:
     def _build(self) -> None:
         self.walls = make_maze(self.cols, self.rows, self.rng)
         self.x, self.y, self.vx, self.vy, self.elapsed, self.won = 0.5, 0.5, 0.0, 0.0, 0.0, False
+        self.bumps = 0
+        self.stars = 0
 
     def next_level(self) -> None:
         self.level += 1
@@ -111,6 +115,13 @@ class MarbleMaze:
             self._move(self.vx * dt / steps, self.vy * dt / steps)
         if (int(self.x), int(self.y)) == self.goal:
             self.won = True
+            par = 12.0 + self.level * 8.0
+            if self.elapsed <= par and self.bumps <= 3:
+                self.stars = 3
+            elif self.elapsed <= par * 1.8:
+                self.stars = 2
+            else:
+                self.stars = 1
 
     def _move(self, dx: float, dy: float) -> None:
         cx, cy = int(self.x), int(self.y)
@@ -118,16 +129,20 @@ class MarbleMaze:
         nx = self.x + dx
         if dx > 0 and walls & WALL_E and nx + MARBLE_R > cx + 1:
             nx, self.vx = cx + 1 - MARBLE_R, -self.vx * BOUNCE
+            self.bumps += 1
         elif dx < 0 and walls & WALL_W and nx - MARBLE_R < cx:
             nx, self.vx = cx + MARBLE_R, -self.vx * BOUNCE
+            self.bumps += 1
         self.x = min(max(nx, MARBLE_R), self.cols - MARBLE_R)
         cx = int(self.x)
         walls = self.walls[cy][cx]
         ny = self.y + dy
         if dy > 0 and walls & WALL_S and ny + MARBLE_R > cy + 1:
             ny, self.vy = cy + 1 - MARBLE_R, -self.vy * BOUNCE
+            self.bumps += 1
         elif dy < 0 and walls & WALL_N and ny - MARBLE_R < cy:
             ny, self.vy = cy + MARBLE_R, -self.vy * BOUNCE
+            self.bumps += 1
         self.y = min(max(ny, MARBLE_R), self.rows - MARBLE_R)
 
 
@@ -159,9 +174,14 @@ class StarDodger:
     since_fire: float = FIRE_COOLDOWN_S
     hurt_s: float = 0.0  # invulnerable after a hit
     flash_s: float = 0.0  # screen flash after a bomb
+    combo: int = 0
 
     def __post_init__(self) -> None:
         self.rng = random.Random(self.seed)
+
+    @property
+    def wave(self) -> int:
+        return 1 + int(self.clock // 20)
 
     def step(self, dt: float, stick: Stick) -> None:
         if self.over:
@@ -180,7 +200,7 @@ class StarDodger:
             self.score += 5 * len(self.rocks)
             self.rocks.clear()
             self.flash_s = 0.35
-        pace = 1.0 + self.clock / 45.0  # gets busier over time
+        pace = 1.0 + self.clock / 36.0 + 0.12 * (self.wave - 1)
         self.since_rock += dt * pace
         if self.since_rock >= ROCK_EVERY_S:
             self.since_rock = 0.0
@@ -196,13 +216,16 @@ class StarDodger:
                     self.rocks.remove(rock)
                     if bullet in self.bullets:
                         self.bullets.remove(bullet)
-                    self.score += 10
+                    self.combo += 1
+                    self.score += 10 * (1 + (self.combo - 1) // 2)
+                    self.flash_s = max(self.flash_s, 0.08)
                     break
         if not self.hurt_s:
             for rock in self.rocks:
                 if math.hypot(self.x - rock[0], self.y - rock[1]) < rock[2] + SHIP_R * 0.8:
                     self.rocks.remove(rock)
                     self.lives -= 1
+                    self.combo = 0
                     self.hurt_s = 1.5
                     if self.lives <= 0:
                         self.over = True
@@ -241,9 +264,9 @@ class Catch:
         if self.over:
             return
         self.clock += dt
-        # Position control feels direct with tilt: the basket eases toward where you point.
+        # Position control feels direct: the basket snaps toward the stick or the pointer.
         target = CATCH_W / 2 + stick.x * (CATCH_W / 2 - BASKET_HALF)
-        self.basket += (target - self.basket) * min(1.0, dt * 12)
+        self.basket += (target - self.basket) * min(1.0, dt * 18)
         pace = 1.0 + self.clock / 60.0
         self.since_drop += dt * pace
         if self.since_drop >= DROP_EVERY_S:

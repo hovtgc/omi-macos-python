@@ -57,6 +57,8 @@ class BeatTap:
         if self.over:
             return
         self.clock += dt
+        if self.clock > 8.0:
+            self.bpm = min(128.0, 104.0 + (self.clock - 8.0) * 0.45)
         self._spawn_ahead()
         if taps:
             near = [note for note in self.notes if not note.judged and abs(note.t - self.clock) <= self.window]
@@ -99,6 +101,7 @@ class Quickdraw:
     fouls: int = 0
     last_ms: float | None = None
     best_ms: float | None = None
+    streak: int = 0
     message: str = "WAIT"
     over: bool = False
 
@@ -113,6 +116,7 @@ class Quickdraw:
         if self.phase == "wait":
             if taps:
                 self.fouls += 1
+                self.streak = 0
                 self.message = "TOO SOON"
                 self.phase, self.left = "gap", 0.7
                 return
@@ -125,9 +129,13 @@ class Quickdraw:
                 ms = max(0.0, (self.clock - self.draw_at) * 1000)
                 self.last_ms = ms
                 self.best_ms = ms if self.best_ms is None else min(self.best_ms, ms)
-                self.score += max(40, int(1000 - ms))
+                self.streak += 1
+                gain = max(40, int(1000 - ms)) + 80 * (self.streak - 1)
+                if ms < 220:
+                    gain += 120
+                self.score += gain
                 self.round += 1
-                self.message = f"{ms:.0f} ms"
+                self.message = f"{ms:.0f} ms" + ("  PERFECT" if ms < 220 else "")
                 if self.round >= self.rounds:
                     self.over = True
                     self.phase = "over"
@@ -136,6 +144,7 @@ class Quickdraw:
                 return
             if self.clock - self.draw_at > 1.15:
                 self.fouls += 1
+                self.streak = 0
                 self.message = "TOO SLOW"
                 self.round += 1
                 if self.round >= self.rounds:
@@ -168,6 +177,9 @@ class Dash:
     over: bool = False
     obstacles: list[list[float]] = field(default_factory=list)  # world x, width, height
     next_x: float = 16.0
+    coyote: float = 0.0
+    jumped: bool = False
+    bonus: int = 0
 
     RUN_X = 3.0
     RUN_W = 0.75
@@ -181,25 +193,36 @@ class Dash:
     def step(self, dt: float, taps: int = 0) -> None:
         if self.over:
             return
-        if taps and self.y <= 0.001:
+        grounded = self.y <= 0.001
+        if grounded:
+            self.coyote = 0.1
+            self.jumped = False
+        else:
+            self.coyote = max(0.0, self.coyote - dt)
+        if taps and not self.jumped and (grounded or self.coyote > 0):
             self.vy = self.JUMP
+            self.jumped = True
+            self.coyote = 0.0
         self.vy -= self.GRAVITY * dt
         self.y += self.vy * dt
         if self.y <= 0.0:
             self.y, self.vy = 0.0, 0.0
         self.travel += self.speed * dt
-        self.speed = min(15.0, self.speed + 0.15 * dt)
+        self.speed = min(16.0, self.speed + 0.35 * dt)
         while self.next_x < self.travel + 28:
             height = 0.85 if self.rng.random() < 0.65 else 1.4
             self.obstacles.append([self.next_x, 0.7, height])
             self.next_x += self.rng.uniform(8.0, 12.0)
         left, right = self.travel + self.RUN_X, self.travel + self.RUN_X + self.RUN_W
+        step = self.speed * dt
         for ox, width, height in self.obstacles:
             if right > ox and left < ox + width and self.y < height:
                 self.over = True
                 break
+            if ox + width < left and ox + width >= left - step and height <= self.y < height + 0.55:
+                self.bonus += 50
         self.obstacles = [item for item in self.obstacles if item[0] + item[1] > self.travel - 2]
-        self.score = int(self.travel)
+        self.score = int(self.travel) + self.bonus
 
 
 # --- Simon Omi ---------------------------------------------------------------------------------
@@ -241,7 +264,7 @@ class Simon:
             if not self.show_on:
                 self.show_on = True
                 self.lit = self.pattern[self.show_i]
-                self.timer = 0.42
+                self.timer = max(0.22, 0.42 - 0.03 * max(0, len(self.pattern) - 2))
                 return
             self.show_on = False
             self.lit = -1

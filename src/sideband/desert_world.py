@@ -149,14 +149,18 @@ class DesertSession(Session):
         from ursina import Entity, color
 
         rng = random.Random(7)
-        sand = color.rgba32(186, 148, 92, 255)
+        sand_tex = paint("sand", sand_image())
+        sand = color.rgba32(210, 170, 110, 255)
         bag = color.rgba32(168, 132, 78, 255)
         concrete = color.rgba32(122, 112, 98, 255)
         for iy, row in enumerate(self.raid.grid):
             for ix, cell in enumerate(row):
                 x, z = (ix + 0.5) * CELL, (iy + 0.5) * CELL
                 if cell == "#":
-                    self.own(Entity(model="cube", shader=lit, position=(x, 0.38, z), scale=(3.7, 0.76, 3.7), color=sand))
+                    self.own(Entity(
+                        model="cube", shader=lit, texture=sand_tex, texture_scale=(2, 0.6),
+                        position=(x, 0.38, z), scale=(3.7, 0.76, 3.7), color=sand,
+                    ))
                     for k in range(3):
                         self.own(Entity(
                             model="cube", shader=lit, color=bag,
@@ -294,7 +298,6 @@ class DesertSession(Session):
             self._texts.clear()
             self._marks = []
             self.build()
-            del flames
         self._keys(dt)
         self._fires(dt)
         if self.state == "playing" and self.look:
@@ -424,19 +427,27 @@ class DesertSession(Session):
             if crate is not None:
                 crate.enabled = not item.taken
                 crate.rotation_y = raid.time * 40
+        kick = max(self.kick, raid.kick)
         if self._flash is not None:
-            self._flash.enabled = self.kick > 0.35
+            self._flash.enabled = raid.muzzle > 0 or kick > 0.35
+            if self._flash.enabled:
+                self._flash.scale = 0.08 + raid.muzzle * 1.4
         if self._rifle is not None:
-            self._rifle.rotation_x = -self.kick * 10
-            self._rifle.z = 1.15 - self.kick * 0.08
+            self._rifle.rotation_x = -kick * 10
+            self._rifle.z = 1.15 - kick * 0.08
 
     def _place_camera(self) -> None:
         from ursina import camera
 
         raid = self.raid
-        shake = self.kick * 0.015
-        camera.position = (raid.x * CELL, EYE - self.kick * 0.03, raid.y * CELL + shake)
-        camera.rotation = (-self.pitch - self.kick * 3.5, _yaw(raid.angle), math.sin(raid.time * 1.5) * 0.15)
+        kick = max(self.kick, raid.kick)
+        shake = kick * 0.02 + raid.shake * 0.05
+        camera.position = (
+            raid.x * CELL + math.sin(raid.time * 48) * shake,
+            EYE - kick * 0.03,
+            raid.y * CELL + math.cos(raid.time * 37) * shake,
+        )
+        camera.rotation = (-self.pitch - kick * 3.5, _yaw(raid.angle), math.sin(raid.time * 1.5) * 0.15 + raid.shake * 2)
 
     def _draw_hud(self) -> None:
         from ursina import color
@@ -446,19 +457,20 @@ class DesertSession(Session):
         self._texts["health"].text = f"HEALTH  {raid.health}"
         self._texts["ammo"].text = f"{gun.name}  {gun.mag} / {gun.reserve}" + ("  RELOADING" if raid.reload_t > 0 else "")
         left = len(raid.live())
-        self._texts["mission"].text = f"{raid.wave}/3  {raid.mission.upper()}  ·  {left} LEFT"
+        chain = f"  ×{raid.combo}" if raid.combo else ""
+        self._texts["mission"].text = f"{raid.wave}/3  {raid.objective.upper()}  ·  {left} LEFT"
         best = self.hub.best("desert")
         best_bit = f"   BEST {best:g}" if best else ""
-        self._texts["score"].text = f"{raid.score}{best_bit}"
+        self._texts["score"].text = f"{raid.score}{chain}{best_bit}"
         title, sub = "", ""
         if self.state == "ready":
             title, sub = "DESERT 91", "Outside Kuwait, 1991. Click to take the rifle. Esc returns."
         elif self.state == "paused":
             title, sub = "PAUSED", "Enter resumes. Esc returns to the shelf."
         elif self.state == "won":
-            title, sub = "WELLS ARE BEHIND YOU", f"Score {raid.score}. Enter runs it again."
+            title, sub = "WELLS ARE BEHIND YOU", f"Score {raid.score}{chain}. Best {best:g}. Enter runs it again." if best else f"Score {raid.score}{chain}. Enter runs it again."
         elif self.state == "over":
-            title, sub = "LEFT ON THE SAND", f"Score {raid.score}. Enter tries again."
+            title, sub = "LEFT ON THE SAND", f"Score {raid.score}{chain}. Best {best:g}. Enter tries again." if best else f"Score {raid.score}{chain}. Enter tries again."
         elif raid.banner_t > 0:
             nxt = MISSIONS.get(raid.wave + 1, "Clear")
             title, sub = "SECTOR CLEAR", nxt

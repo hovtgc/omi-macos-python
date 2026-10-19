@@ -12,7 +12,7 @@ import time
 from typing import Any
 
 from sideband.minigames import WALL_E, WALL_N, WALL_S, WALL_W, MarbleMaze, Stick
-from sideband.stage import Session, glow, haze, label, paint, sand_image, sky_image, stick, sun, toggle_fullscreen
+from sideband.stage import Session, aim, glow, haze, label, paint, sand_image, sky_image, stick, sun, toggle_fullscreen
 
 CELL = 2.35
 
@@ -158,14 +158,15 @@ class CornSession(Session):
         camera.look_at((mx + math.sin(self._yaw) * 2.0, 0.3, mz + math.cos(self._yaw) * 2.0))
         best = self.hub.best("corn")
         tail = f"   best {best:.1f}s" if best else ""
-        self._texts["hud"].text = f"LEVEL {g.level}   {g.elapsed:0.1f}s{tail}"
+        marks = "★" * g.stars + "☆" * (3 - g.stars) if g.won else ""
+        self._texts["hud"].text = f"LEVEL {g.level}   {g.elapsed:0.1f}s{tail}   {marks}".rstrip()
         center = ""
         if self.state == "ready":
             center = "CLICK TO ROLL"
         elif self.state == "paused":
             center = "PAUSED"
         elif g.won:
-            center = "HOME TO THE BARN"
+            center = f"HOME TO THE BARN   {marks}"
         self._texts["center"].text = center
 
     def _keys(self) -> None:
@@ -194,7 +195,7 @@ class CornSession(Session):
             self.hub.recentre()
 
     def _axes(self) -> tuple[float, float]:
-        x, y = stick()
+        x, y = aim(stick())
         if x == 0.0 and y == 0.0:
             axes = self.hub.play_axes()
             if axes is not None:

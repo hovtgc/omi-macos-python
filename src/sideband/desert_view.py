@@ -26,7 +26,7 @@ if TYPE_CHECKING:
 # RAID_WAVES imported by mistake? I didn't export that. Remove.
 W, H = 960, 640
 VIEW_H = 460
-RAYS = 200
+RAYS = 280
 FOV = math.radians(66)
 FRAME_MS = 16
 HAZE = (214, 126, 58)
@@ -138,8 +138,8 @@ class DesertWindow:
         if abs(dx) < 1 and abs(dy) < 1:
             return
         self.hub.note_device("keys")
-        self.raid.angle = (self.raid.angle - dx * 0.0042) % math.tau
-        self.pitch = max(-90.0, min(90.0, self.pitch - dy * 0.35))
+        self.raid.angle = (self.raid.angle - dx * 0.0054) % math.tau
+        self.pitch = max(-70.0, min(70.0, self.pitch - dy * 0.42))
         self._warp()
 
     def _press(self, _event: tk.Event) -> None:
@@ -254,6 +254,11 @@ class DesertWindow:
             dist, cell, side = cast(raid.grid, raid.x, raid.y, ray)
             zbuf[i] = dist
             shade = WALL.get(cell, WALL["#"])[side]
+            hx = raid.x + math.cos(ray) * dist
+            hy = raid.y + math.sin(ray) * dist
+            stripe = int(((hy if side == 0 else hx) * 3.0) % 2)
+            if stripe:
+                shade = tuple(int(channel * 0.78) for channel in shade)
             fog = min(1.0, dist / 11)
             base = tuple(int(channel + (haze - channel) * fog) for channel, haze in zip(shade, HAZE))
             height = min(VIEW_H * 1.4, (VIEW_H * 0.85) / dist)
@@ -356,13 +361,17 @@ class DesertWindow:
         c.create_polygon(x + 36, y + 6, x + 230, y - 8, x + 214, y + 22, x + 24, y + 30, fill="#8c9364", outline="", tags="dyn")
         c.create_rectangle(x + 160, y + 4, x + 360, y + 16, fill="#2e3228", outline="", tags="dyn")
         c.create_oval(x + 78, y + 22, x + 142, y + 58, fill="#c4a574", outline="", tags="dyn")
+        if self.raid.muzzle > 0:
+            flare = 18 + int(self.raid.muzzle * 220)
+            c.create_oval(x + 330, y - flare * 0.35, x + 330 + flare, y + flare * 0.45, fill="#ffe7a8", outline="", tags="dyn")
         self._kick = max(0, kick - 4)
 
     def _hud(self) -> None:
         c, raid = self.canvas, self.raid
         c.create_rectangle(0, VIEW_H, W, H, fill="#12110e", outline="", tags="dyn")
-        c.create_text(28, VIEW_H + 36, anchor="w", text=str(raid.score), fill="#f7f4ee", font=("Helvetica", 28, "bold"), tags="dyn")
-        c.create_text(28, VIEW_H + 68, anchor="w", text=raid.mission, fill="#c7bba8", font=("Helvetica", 14), tags="dyn")
+        chain = f"  ×{raid.combo}" if raid.combo else ""
+        c.create_text(28, VIEW_H + 36, anchor="w", text=f"{raid.score}{chain}", fill="#f7f4ee", font=("Helvetica", 28, "bold"), tags="dyn")
+        c.create_text(28, VIEW_H + 68, anchor="w", text=raid.objective, fill="#c7bba8", font=("Helvetica", 14), tags="dyn")
         c.create_text(W - 28, VIEW_H + 34, anchor="e", text=raid.gun.name, fill="#f7f4ee", font=("Helvetica", 16, "bold"), tags="dyn")
         ammo = "RELOADING" if raid.reload_t > 0 else f"{raid.gun.mag}  /  {raid.gun.reserve}"
         c.create_text(W - 28, VIEW_H + 62, anchor="e", text=ammo, fill="#e6c15a", font=("Helvetica", 18, "bold"), tags="dyn")

@@ -36,7 +36,7 @@ GameSpec(
 
    A game that needs its own drawing (the way Sky Ace does) keeps a window with `on_tap`, `on_hold`, `on_shake`, `close`, `playing` and `top`, and a branch in `Hub.open_game` in `src/sideband/ui.py`. Read the stick from `hub.play_axes()`, and fall back to the arrow keys when that returns None. Call `hub.record_score(key, score)` when the run ends. Corn Maze passes `lower_is_better=True`.
 
-4. **Give it a cover.** A 16:9 JPEG with no baked-in title, saved under `src/sideband/assets/covers/` and named in `FILES` in `src/sideband/covers.py`. Until that file exists the shelf draws a flat panel from the game's colours. No downloaded images at runtime.
+4. **Give it a cover.** A 16:9 JPEG with no baked-in title, saved under `src/sideband/assets/covers/` and named in `FILES` in `src/sideband/covers.py`. The file name has to be that game's picture (the desert file is the desert, the corn file is the corn). `tests/test_desert.py` pins the bundled bytes so a rename cannot swap two paintings. Until that file exists the shelf draws a titled gradient from the game's colours. No downloaded images at runtime.
 
 5. **Test it** in `tests/` with scripted taps. No pendant, no window. `sh scripts/test.sh`.
 

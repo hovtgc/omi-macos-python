@@ -1,6 +1,12 @@
 """Shelf cover art. The JPEGs live in the package; nothing is downloaded at runtime.
 
-A game with no file here gets a flat fallback drawn by the hub. That list is `missing_covers`.
+The file name is the picture. `desert-91.jpg` is the oil-fire desert, `sky-ace-1943.jpg` is the
+P-51, `corn-maze.jpg` is the pumpkin in the corn, `omi-catch.jpg` is the basket of stars,
+`voice-flap.jpg` is the green microphone bird. `omi-flap-3d.jpg` and `star-dodger.jpg` match
+their names too. `CoverTest` pins the file bytes so a swap cannot land quietly.
+
+A game with no file here gets a painted fallback (the title on a gradient) drawn by the hub.
+That list is `missing_covers`.
 """
 
 from __future__ import annotations

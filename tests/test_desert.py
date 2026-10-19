@@ -1,9 +1,10 @@
 """Desert 91, headless: the raycaster, the fight, and the cover files. No window."""
 
+import hashlib
 import math
 import unittest
 
-from sideband.covers import cover_path, missing_covers
+from sideband.covers import DIR, cover_path, missing_covers
 from sideband.desert import Orders, Raid, _actor, cast, cell_at, project, tone_wav
 from sideband.legend import legend
 
@@ -153,6 +154,22 @@ class FightTest(unittest.TestCase):
         self.assertFalse(raid.won)
         self.assertEqual(raid.health, 0)
 
+    def test_a_second_kill_in_the_chain_pays_extra(self) -> None:
+        raid = self._lane(6.5)
+        raid.actors.append(_actor(9.5, 2.5, "soldier", 1))
+        raid.actors[0].hp = 26
+        raid.actors[1].hp = 26
+        raid.step(0.05, Orders(fire=True))
+        self.assertFalse(raid.actors[0].alive)
+        self.assertEqual(raid.combo, 1)
+        self.assertEqual(raid.score, 100)
+        self.assertGreater(raid.kick, 0)
+        raid.gun.cooldown = 0
+        raid.step(0.05, Orders(fire=True))
+        self.assertFalse(raid.actors[1].alive)
+        self.assertEqual(raid.combo, 2)
+        self.assertEqual(raid.score, 450)  # 100, then 150, then the clear
+
     def _lane(self, soldier_x: float = 6.5) -> Raid:
         raid = Raid()
         raid.x, raid.y, raid.angle = 2.5, 2.5, 0.0
@@ -175,6 +192,20 @@ class CoverTest(unittest.TestCase):
             assert path is not None
             self.assertGreater(path.stat().st_size, 10_000)
         self.assertEqual(missing_covers(), ("beat", "draw", "dash", "simon"))
+
+    def test_each_cover_file_is_that_games_picture(self) -> None:
+        """Pinned bytes. Swapping two JPEGs between names fails here."""
+        pinned = {
+            "corn-maze.jpg": "8d6174a6f7f9e6593d72c9b07a8d4e54f938bcdda2ce8db3d1c07f85009b0070",
+            "desert-91.jpg": "2db07a1a4af2815c755bc711f7efb93fa2572d14ba00d94cb3111b5dc3e5f4a5",
+            "omi-catch.jpg": "264a2abe938dd3f895ae0490e2d7afe7764259046db8c1df5f597db406a3785a",
+            "omi-flap-3d.jpg": "c393e550e45b2fb0de4a172486969472868e834d9d0fd1a238bfda3dff659610",
+            "sky-ace-1943.jpg": "f87d04589e19b7ece149c89a37d7be8c18b524493600faa954847b5d86b34efc",
+            "star-dodger.jpg": "7de2f0436096fcab699de4f508d05a0b502414a6d1f91155bea38daa39a48b1e",
+            "voice-flap.jpg": "bb0b1bca08b8d27c275ef0c87fa907b5727cc11c2503eaa0bdd42a72454e7a96",
+        }
+        for name, digest in pinned.items():
+            self.assertEqual(hashlib.sha256((DIR / name).read_bytes()).hexdigest(), digest, name)
 
     def test_the_keyboard_legend_names_the_mouse_and_reload(self) -> None:
         shown = legend("desert", device="keys")

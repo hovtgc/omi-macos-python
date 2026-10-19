@@ -14,7 +14,7 @@ from typing import Any
 from sideband.minigames import Stick
 from sideband.sfx import blip
 from sideband.skyfighter import Dogfight
-from sideband.stage import Session, haze, label, paint, sand_image, sky_image, stick, sun, toggle_fullscreen
+from sideband.stage import Session, aim, haze, label, paint, sand_image, sky_image, stick, sun, toggle_fullscreen
 
 
 class SkySession(Session):
@@ -139,11 +139,13 @@ class SkySession(Session):
         self._sync_enemies(lit)
         self._sync_shots(unlit_shader)
         self._sync_booms()
-        camera.position = (g.x * 0.85, g.y + 6.5, g.z - 16)
+        jolt = g.shake * 0.35
+        camera.position = (g.x * 0.85 + math.sin(g.clock * 40) * jolt, g.y + 6.5, g.z - 16)
         camera.look_at((g.x, g.y + 0.5, g.z + 36))
         best = self.hub.best("fighter")
         tail = f"   best {best:g}" if best else ""
-        self._texts["hud"].text = f"WAVE {g.wave}   {g.score}{tail}   HULL {int(g.health)}"
+        chain = f"   ×{g.combo}" if g.combo else ""
+        self._texts["hud"].text = f"WAVE {g.wave}   {g.score}{chain}{tail}   HULL {int(g.health)}"
         center = ""
         if self.state == "ready":
             center = "CLICK TO TAKE OFF"
@@ -183,7 +185,7 @@ class SkySession(Session):
             self.hub.recentre()
 
     def _axes(self) -> tuple[float, float]:
-        x, y = stick()
+        x, y = aim(stick())
         if x == 0.0 and y == 0.0:
             axes = self.hub.play_axes()
             if axes is not None:

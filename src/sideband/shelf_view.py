@@ -183,7 +183,8 @@ class ShelfGameWindow:
             c.create_oval(x - 22, line - 78, x + 22, line - 34, outline=colour, width=2, tags="dyn")
             c.create_oval(x - 10, line - 66, x + 10, line - 46, fill=colour, outline="", tags="dyn")
         c.create_text(36, 36, anchor="w", text=str(g.score), fill="#ffffff", font=("Helvetica", 32, "bold"), tags="dyn")
-        c.create_text(36, 72, anchor="w", text=f"{g.combo} combo    misses {g.misses}/{g.max_misses}", fill="#ffd1dc", font=("Helvetica", 14, "bold"), tags="dyn")
+        mult = 1 + g.combo // 4
+        c.create_text(36, 72, anchor="w", text=f"{g.combo} combo  ×{mult}    misses {g.misses}/{g.max_misses}", fill="#ffd1dc", font=("Helvetica", 14, "bold"), tags="dyn")
         if g.judge:
             c.create_text(W - 36, 48, anchor="e", text=g.judge, fill="#ffe66d", font=("Helvetica", 22, "bold"), tags="dyn")
 
@@ -202,7 +203,7 @@ class ShelfGameWindow:
         colour = "#ff4d4d" if g.phase == "draw" else "#ffe7b0"
         c.create_text(W / 2, H * 0.38, text=g.message, fill=colour, font=("Helvetica", 72, "bold"), tags="dyn")
         c.create_text(36, 36, anchor="w", text=f"{g.score}", fill="#ffffff", font=("Helvetica", 28, "bold"), tags="dyn")
-        c.create_text(W - 36, 36, anchor="e", text=f"round {min(g.round + 1, g.rounds)}/{g.rounds}    fouls {g.fouls}", fill="#ffe0c2", font=("Helvetica", 16, "bold"), tags="dyn")
+        c.create_text(W - 36, 36, anchor="e", text=f"round {min(g.round + 1, g.rounds)}/{g.rounds}   streak {g.streak}   fouls {g.fouls}", fill="#ffe0c2", font=("Helvetica", 16, "bold"), tags="dyn")
         if g.best_ms is not None:
             c.create_text(W / 2, H * 0.5, text=f"best {g.best_ms:.0f} ms", fill="#ffffff", font=("Helvetica", 18, "bold"), tags="dyn")
 
@@ -235,6 +236,7 @@ class ShelfGameWindow:
                 c.create_polygon(screen, ground, screen + width * scale * 0.5, ground - height * scale, screen + width * scale, ground,
                                  fill="#6a3a28", outline="#ffb070", tags="dyn")
         c.create_text(36, 36, anchor="w", text=str(g.score), fill="#ffffff", font=("Helvetica", 32, "bold"), tags="dyn")
+        c.create_text(36, 72, anchor="w", text=f"{g.speed:0.1f} m/s", fill="#ffd1a8", font=("Helvetica", 14, "bold"), tags="dyn")
 
     def _draw_simon(self) -> None:
         c, g = self.canvas, self.game

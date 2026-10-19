@@ -74,6 +74,9 @@ class MazeTest(unittest.TestCase):
         self.assertEqual(game.level, 2)
         self.assertGreater(game.cols, cols)
         self.assertFalse(game.won)
+        game.x, game.y = game.goal[0] + 0.5, game.goal[1] + 0.5
+        game.step(1 / 60, Stick())
+        self.assertEqual(game.stars, 3)
 
     def test_tap_brakes(self) -> None:
         game = MarbleMaze(seed=3)

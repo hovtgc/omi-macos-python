@@ -87,6 +87,7 @@ class Flight:
     walls: list[list[float]] = field(default_factory=list)  # [z, hole x, hole y]
     score: int = 0
     best: int = 0
+    combo: int = 0
     started: bool = False
     alive: bool = True
     since_death: float = 0.0
@@ -153,8 +154,10 @@ class Flight:
         for wall in self.walls:
             if before < wall[0] <= self.z:
                 if self._through(wall):
-                    self.score += 1
+                    self.combo += 1
+                    self.score += 1 + self.combo // 10
                 else:
+                    self.combo = 0
                     self._crash()
                     return
         if self.y <= RADIUS:
@@ -224,6 +227,7 @@ class GameWindow:
         self.on_device = on_device
         self.on_mic = on_mic
         self.keys: set[str] = set()
+        self.pointer = 0.0
         self.flash = 0
         self.trail: list[tuple[float, float, float]] = []
         self.cam = [self.game.x, self.game.y + CAM_UP]
@@ -249,6 +253,7 @@ class GameWindow:
         self.top.bind("<KeyPress>", self._key_down)
         self.top.bind("<KeyRelease>", lambda e: self.keys.discard(e.keysym.lower()))
         self.canvas.bind("<Button-1>", lambda _e: self._pointer())
+        self.canvas.bind("<Motion>", self._glide)
         self.top.protocol("WM_DELETE_WINDOW", self.close)
         self.top.focus_force()
         self._tick()
@@ -319,6 +324,9 @@ class GameWindow:
             return "keys"
         return device_of(self.steer_label)
 
+    def _glide(self, event: tk.Event) -> None:
+        self.pointer = max(-1.0, min(1.0, (event.x / WIDTH - 0.5) * 2.2))
+
     def _steer(self) -> tuple[float, str]:
         if self.voice:
             return 0.0, "voice"
@@ -326,6 +334,8 @@ class GameWindow:
         if pendant is not None:
             return pendant
         steer = (1.0 if self.keys & {"right", "d"} else 0.0) - (1.0 if self.keys & {"left", "a"} else 0.0)
+        if abs(steer) < 0.05 and abs(self.pointer) > 0.08:
+            steer = self.pointer
         return steer, "keys ← →"
 
     def _tick(self) -> None:
@@ -526,8 +536,9 @@ class GameWindow:
     def _hud(self) -> None:
         c, g = self.canvas, self.game
         cx = WIDTH / 2
-        c.create_text(cx + 2, 48, text=str(g.score), fill="#000000", font=("Helvetica", 44, "bold"), tags="dyn")
-        c.create_text(cx, 46, text=str(g.score), fill="white", font=("Helvetica", 44, "bold"), tags="dyn")
+        chain = f"  ×{g.combo}" if g.combo > 1 else ""
+        c.create_text(cx + 2, 48, text=f"{g.score}{chain}", fill="#000000", font=("Helvetica", 44, "bold"), tags="dyn")
+        c.create_text(cx, 46, text=f"{g.score}{chain}", fill="white", font=("Helvetica", 44, "bold"), tags="dyn")
         if g.best:
             c.create_text(WIDTH - 20, 26, anchor="e", text=f"best {g.best}", fill="#c9d4ff", font=("Helvetica", 14), tags="dyn")
         name = "voice" if self.voice else "flap"

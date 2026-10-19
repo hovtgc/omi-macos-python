@@ -218,6 +218,13 @@ class Raid:
     banner_t: float = 0.0
     pending: int = 0
     hit_flash: float = 0.0
+    combo: int = 0
+    kick: float = 0.0
+    muzzle: float = 0.0
+    shake: float = 0.0
+    stop: float = 0.0
+    vx: float = 0.0
+    vy: float = 0.0
     actors: list[Actor] = field(default_factory=list)
     pickups: list[Pickup] = field(default_factory=list)
     puffs: list[list[float]] = field(default_factory=list)
@@ -243,6 +250,14 @@ class Raid:
         return MISSIONS.get(self.wave, "Clear")
 
     @property
+    def objective(self) -> str:
+        return {
+            1: "Drop the patrol on the berm",
+            2: "Clear the bunker road",
+            3: "Push through the smoke line",
+        }.get(self.wave, "Clear the position")
+
+    @property
     def gun(self) -> Gun:
         return self.guns[self.slot]
 
@@ -255,13 +270,22 @@ class Raid:
             return
         dt = max(0.0, min(float(dt), 2.0))
         self.time += dt
-        self.angle = (self.angle + orders.turn) % math.tau
         self.hit_flash = max(0.0, self.hit_flash - dt)
+        self.kick = max(0.0, self.kick - dt * 8.0)
+        self.muzzle = max(0.0, self.muzzle - dt)
+        self.shake = max(0.0, self.shake - dt)
         for actor in self.actors:
             actor.hurt = max(0.0, actor.hurt - dt)
         self.puffs = [puff for puff in self.puffs if puff[2] < 0.5]
         for puff in self.puffs:
             puff[2] += dt
+        if self.stop > 0:
+            self.stop -= dt
+            if self.stop > 0:
+                return
+            dt = -self.stop
+            self.stop = 0.0
+        self.angle = (self.angle + orders.turn) % math.tau
         if orders.weapon in self.guns and self.reload_t <= 0:
             self.slot = orders.weapon
         if self.banner_t > 0:
@@ -292,16 +316,24 @@ class Raid:
     def _slide(self, dt: float, forward: float, strafe: float) -> None:
         forward = max(-1.0, min(1.0, forward))
         strafe = max(-1.0, min(1.0, strafe))
+        cos_a, sin_a = math.cos(self.angle), math.sin(self.angle)
+        wish_x = (cos_a * forward - sin_a * strafe) * SPEED
+        wish_y = (sin_a * forward + cos_a * strafe) * SPEED
+        rate = 16.0 if forward or strafe else 12.0
+        blend = min(1.0, rate * dt)
+        self.vx += (wish_x - self.vx) * blend
+        self.vy += (wish_y - self.vy) * blend
         left = dt
         while left > 1e-9:
             tick = min(0.05, left)
-            cos_a, sin_a = math.cos(self.angle), math.sin(self.angle)
-            mx = (cos_a * forward - sin_a * strafe) * SPEED * tick
-            my = (sin_a * forward + cos_a * strafe) * SPEED * tick
-            if not blocked(self.grid, self.x + mx, self.y):
-                self.x += mx
-            if not blocked(self.grid, self.x, self.y + my):
-                self.y += my
+            if not blocked(self.grid, self.x + self.vx * tick, self.y):
+                self.x += self.vx * tick
+            else:
+                self.vx = 0.0
+            if not blocked(self.grid, self.x, self.y + self.vy * tick):
+                self.y += self.vy * tick
+            else:
+                self.vy = 0.0
             left -= tick
 
     def _collect(self) -> None:
@@ -329,18 +361,26 @@ class Raid:
             if not self._sees(actor.x, actor.y):
                 continue
             dist = math.hypot(actor.x - self.x, actor.y - self.y)
-            if dist > actor.standoff:
-                step = min(actor.speed * dt, dist - actor.standoff)
+            pace = 1.0 + 0.22 * (actor.wave - 1)
+            if dist > 0.2:
                 ux, uy = (self.x - actor.x) / dist, (self.y - actor.y) / dist
-                nx, ny = actor.x + ux * step, actor.y + uy * step
+                if dist > actor.standoff:
+                    step = min(actor.speed * pace * dt, dist - actor.standoff)
+                    nx, ny = actor.x + ux * step, actor.y + uy * step
+                else:
+                    # Hold the line and sidestep so a still target is not a still target.
+                    step = actor.speed * 0.65 * pace * dt
+                    nx, ny = actor.x - uy * step, actor.y + ux * step
                 if not blocked(self.grid, nx, ny, actor.radius * 0.6) and math.hypot(nx - self.x, ny - self.y) > 0.55:
                     actor.x, actor.y = nx, ny
                 elif not blocked(self.grid, nx, actor.y, actor.radius * 0.6):
                     actor.x = nx
             if dist <= actor.reach and actor.cooldown <= 0:
                 self.health -= actor.damage
+                self.combo = 0
                 self.hit_flash = 0.18
-                actor.cooldown = actor.refire
+                self.shake = max(self.shake, 0.22)
+                actor.cooldown = actor.refire * max(0.6, 1.0 - 0.12 * (actor.wave - 1))
 
     def _weapon(self, dt: float, fire: bool, reload: bool) -> None:
         gun = self.gun
@@ -365,6 +405,9 @@ class Raid:
             return
         gun.mag -= 1
         gun.cooldown = gun.fire_s
+        self.kick = min(1.0, self.kick + 0.72)
+        self.muzzle = 0.055
+        self.shake = max(self.shake, 0.06)
         target = self._hitscan(gun)
         if target is None:
             return
@@ -372,7 +415,12 @@ class Raid:
         target.hurt = 0.12
         if target.hp <= 0:
             target.alive = False
-            self.score += target.points
+            self.combo += 1
+            # The first kill in a chain is face value. Later kills pay a rising bonus.
+            extra = 0 if self.combo < 2 else 50 * (self.combo - 1)
+            self.score += target.points + extra
+            self.stop = 0.04
+            self.shake = max(self.shake, 0.28)
             self.puffs.append([target.x, target.y, 0.0])
 
     def _hitscan(self, gun: Gun) -> Actor | None:

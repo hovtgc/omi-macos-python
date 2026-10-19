@@ -73,9 +73,12 @@ class MiniGameWindow:
         self.leaves = [[random.uniform(0, W), random.uniform(0, H), random.uniform(28, 70), random.random() * 6] for _ in range(36)]
         self.maze_level = 0
         self.jolt = 0
+        self.mx = 0.0
+        self.my = 0.0
         self.top.bind("<KeyPress>", self._key_down)
         self.top.bind("<KeyRelease>", lambda e: self.keys.discard(e.keysym.lower()))
         self.canvas.bind("<Button-1>", lambda _e: self._pointer())
+        self.canvas.bind("<Motion>", self._motion)
         self.top.protocol("WM_DELETE_WINDOW", self.close)
         self.new_game()
         self.top.focus_force()
@@ -144,12 +147,20 @@ class MiniGameWindow:
         self.hub.note_device("keys")
         self.on_tap("single")
 
+    def _motion(self, event: tk.Event) -> None:
+        self.mx = max(-1.0, min(1.0, (event.x / W - 0.5) * 2.3))
+        self.my = max(-1.0, min(1.0, (0.5 - event.y / H) * 2.3))
+
     def _stick(self) -> tuple[float, float, str]:
         pendant = self.hub.play_axes()
         if pendant is not None:
             return pendant
         x = (1.0 if self.keys & {"right", "d"} else 0.0) - (1.0 if self.keys & {"left", "a"} else 0.0)
         y = (1.0 if self.keys & {"up", "w"} else 0.0) - (1.0 if self.keys & {"down", "s"} else 0.0)
+        if abs(x) < 0.05 and abs(self.mx) > 0.08:
+            x = self.mx
+        if abs(y) < 0.05 and abs(self.my) > 0.08:
+            y = self.my
         return x, y, "keys"
 
     # --- loop -----------------------------------------------------------------------------
@@ -309,7 +320,8 @@ class MiniGameWindow:
         c.create_arc(px - r * 0.28, py + r * 0.05, px + r * 0.28, py + r * 0.45, start=200, extent=140, style="arc", outline="#2a1208", width=2, tags="dyn")
         c.create_oval(px - r * 0.45, py - r * 0.55, px - r * 0.1, py - r * 0.22, fill="#fff1c2", outline="", tags="dyn")
         c.create_rectangle(px - r * 0.12, py - r * 1.35, px + r * 0.12, py - r * 0.75, fill="#2f6a28", outline="", tags="dyn")
-        c.create_text(20, 26, anchor="w", text=f"CORN MAZE  ·  level {g.level}", fill="#fff4e8", font=("Helvetica", 20, "bold"), tags="dyn")
+        marks = ("  " + "★" * g.stars) if g.won else ""
+        c.create_text(20, 26, anchor="w", text=f"CORN MAZE  ·  level {g.level}{marks}", fill="#fff4e8", font=("Helvetica", 20, "bold"), tags="dyn")
         c.create_text(W - 20, 26, anchor="e", text=f"{g.elapsed:5.1f} s", fill="#fff4e8", font=("Helvetica", 20, "bold"), tags="dyn")
         if g.won:
             if not self.recorded:
@@ -317,7 +329,7 @@ class MiniGameWindow:
                 self.hub.record_score("corn", g.elapsed, lower_is_better=True)
             round_rect(c, W / 2 - 290, H / 2 - 90, W / 2 + 290, H / 2 + 80, 24, fill="#fff4d6", outline="#c0282d", width=4, tags="dyn")
             c.create_text(W / 2, H / 2 - 44, text="HOME TO THE BARN!", fill="#c0282d", font=("Helvetica", 32, "bold italic"), tags="dyn")
-            c.create_text(W / 2, H / 2 - 4, text=f"level {g.level} in {g.elapsed:.1f} s", fill="#5c3a18", font=("Helvetica", 16, "bold"), tags="dyn")
+            c.create_text(W / 2, H / 2 - 4, text=f"level {g.level} in {g.elapsed:.1f} s   {'★' * g.stars}", fill="#5c3a18", font=("Helvetica", 16, "bold"), tags="dyn")
             round_rect(c, W / 2 - 275, H / 2 + 22, W / 2 + 275, H / 2 + 66, 20, fill="#12002b", outline="", tags="dyn")
             draw_legend(c, W / 2, H / 2 + 44, legend("corn", "won", device=self.hub.active_device()), size=16)
         else:
@@ -365,7 +377,9 @@ class MiniGameWindow:
             x, y, r = ox + g.x * scale, g.y * scale, 30 + age * W
             for k, colour, width in ((0, "#ffffff", 6), (14, "#7af0ff", 4), (28, "#ff5a6a", 2)):
                 c.create_oval(x - r + k, y - r + k, x + r - k, y + r - k, outline=colour, width=width, tags="dyn")
-        c.create_text(20, 22, anchor="w", text=f"{g.score}", fill="white", font=("Helvetica", 22, "bold"), tags="dyn")
+        chain = f"  ×{g.combo}" if g.combo else ""
+        c.create_text(20, 22, anchor="w", text=f"{g.score}{chain}", fill="white", font=("Helvetica", 22, "bold"), tags="dyn")
+        c.create_text(20, 48, anchor="w", text=f"wave {g.wave}", fill="#c9c4ff", font=("Helvetica", 13, "bold"), tags="dyn")
         c.create_text(W - 20, 22, anchor="e", text="♥" * g.lives, fill="#ff6b8a", font=("Helvetica", 20), tags="dyn")
         c.create_text(W - 20, 48, anchor="e", text=f"bombs {'◆' * g.bombs or '—'}", fill="#9ad7ff", font=("Helvetica", 14, "bold"), tags="dyn")
 

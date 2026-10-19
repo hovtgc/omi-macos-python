@@ -83,9 +83,10 @@ class DashTest(unittest.TestCase):
         game.next_x = 10_000
         game.step(1 / 60, 1)
         air = game.y
+        lifted = game.vy
         game.step(1 / 60, 1)
         self.assertGreater(game.y, air)
-        self.assertLess(game.vy, Dash.JUMP)
+        self.assertLess(game.vy, lifted)
 
 
 class SimonTest(unittest.TestCase):

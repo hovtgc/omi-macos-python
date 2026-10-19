@@ -12,7 +12,7 @@ from typing import Any
 
 from sideband.minigames import FIELD_H, FIELD_W, StarDodger, Stick
 from sideband.sfx import blip
-from sideband.stage import Session, haze, label, paint, sky_image, stick, sun, toggle_fullscreen
+from sideband.stage import Session, aim, haze, label, paint, sky_image, stick, sun, toggle_fullscreen
 
 SCALE = 0.16
 
@@ -125,7 +125,8 @@ class DodgerSession(Session):
         camera.look_at((sx * 0.2, 0.3, sz + 7))
         best = self.hub.best("dodger")
         tail = f"   best {best:g}" if best else ""
-        self._texts["hud"].text = f"SCORE {g.score}{tail}   LIVES {g.lives}   BOMBS {g.bombs}"
+        chain = f"   ×{g.combo}" if g.combo else ""
+        self._texts["hud"].text = f"WAVE {g.wave}   {g.score}{chain}{tail}   LIVES {g.lives}   BOMBS {g.bombs}"
         center = ""
         if self.state == "ready":
             center = "CLICK TO LAUNCH"
@@ -159,7 +160,7 @@ class DodgerSession(Session):
             self.on_shake()
 
     def _axes(self) -> tuple[float, float]:
-        x, y = stick()
+        x, y = aim(stick())
         if x == 0.0 and y == 0.0:
             axes = self.hub.play_axes()
             if axes is not None:
