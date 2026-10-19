@@ -32,6 +32,8 @@ FEATURES = {
 }
 EXTRAS = (
     ("bleak", "bluetooth", "base install"),
+    ("PIL", "cover art", "pillow"),
+    ("ursina", "3D arcade", "ursina"),
     ("av", "audio decoding", "audio"),
     ("mlx_whisper", "transcription", "transcribe"),
     ("mlx_lm", "assistant", "llm"),
@@ -78,7 +80,12 @@ def package_checks() -> list[Check]:
     out = []
     for module, purpose, extra in EXTRAS:
         found = importlib.util.find_spec(module) is not None
-        fix = "pip install -e ." if extra == "base install" else f"pip install -e '.[{extra}]'"
+        if extra in ("pillow", "ursina"):
+            fix = "sh scripts/setup.sh"
+        elif extra == "base install":
+            fix = "pip install -e ."
+        else:
+            fix = f"pip install -e '.[{extra}]'"
         out.append(Check(f"{purpose} ({module})", found, "installed" if found else "missing", fix))
     return out
 

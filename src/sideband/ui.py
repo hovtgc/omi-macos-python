@@ -1112,6 +1112,25 @@ class Hub:
 
     # --- games -----------------------------------------------------------------------------
 
+    def _launch_3d(self, name: str, title: str, factory: object, flat) -> None:
+        """Open an Ursina session, or the Tk window when 3D is not there."""
+        from sideband import stage
+
+        if not stage.available():
+            self.log(f"{title}: Ursina is not installed, so this stays on the built-in view. Run sh scripts/setup.sh")
+            flat()
+            return
+        try:
+            stage.ensure()
+        except Exception as exc:
+            self.log(f"{title}: the 3D window did not open ({exc}). Using the built-in view.")
+            flat()
+            return
+        self.game = factory(self, self._game_closed)  # type: ignore[operator]
+        self.game_name = name
+        self.log(f"{title}: 3D window. Esc pauses, Esc again returns, F11 is fullscreen.")
+        self.root.after(1, lambda: stage.play(self, self.game))
+
     def open_game(self, name: str) -> None:
         if self.game is not None:
             self.game.top.lift()
@@ -1127,26 +1146,56 @@ class Hub:
             self.game_name = name
             self.log(f"{name} open: one button, keyboard or the pendant")
             return
-        if name in ("corn", "dodger", "catch"):
+        if name == "desert":
+            from sideband.desert_view import DesertWindow
+            from sideband.desert_world import DesertSession
+
+            def _flat() -> None:
+                self.game = DesertWindow(self, self._game_closed)
+                self.game_name = "desert"
+                self.log("Desert 91: flat view. WASD moves, mouse looks, click fires, R reloads")
+
+            self._launch_3d("desert", "Desert 91", DesertSession, _flat)
+            return
+        if name == "fighter":
+            from sideband.sky_world import SkySession
+            from sideband.skyfighter_view import FighterWindow
+
+            def _flat() -> None:
+                self.game = FighterWindow(self, self._game_closed)
+                self.game_name = "fighter"
+                self.log("Sky Ace 1943: arrows fly, space fires, B rolls, Esc pauses")
+
+            self._launch_3d("fighter", "Sky Ace 1943", SkySession, _flat)
+            return
+        if name == "dodger":
+            from sideband.arcade import MiniGameWindow
+            from sideband.dodger_world import DodgerSession
+
+            def _flat() -> None:
+                self.game = MiniGameWindow(self, name, self._game_closed)
+                self.game_name = name
+                self.log("dodger open: taps, tilt and shakes go to the game")
+
+            self._launch_3d("dodger", "Star Dodger", DodgerSession, _flat)
+            return
+        if name == "corn":
+            from sideband.arcade import MiniGameWindow
+            from sideband.corn_world import CornSession
+
+            def _flat() -> None:
+                self.game = MiniGameWindow(self, name, self._game_closed)
+                self.game_name = name
+                self.log("corn open: taps, tilt and shakes go to the game")
+
+            self._launch_3d("corn", "Corn Maze", CornSession, _flat)
+            return
+        if name == "catch":
             from sideband.arcade import MiniGameWindow
 
             self.game = MiniGameWindow(self, name, self._game_closed)
             self.game_name = name
             self.log(f"{name} open: taps, tilt and shakes go to the game")
-            return
-        if name == "desert":
-            from sideband.desert_view import DesertWindow
-
-            self.game = DesertWindow(self, self._game_closed)
-            self.game_name = name
-            self.log("Desert 91: WASD moves, mouse looks, click fires, R reloads")
-            return
-        if name == "fighter":
-            from sideband.skyfighter_view import FighterWindow
-
-            self.game = FighterWindow(self, self._game_closed)
-            self.game_name = name
-            self.log("Sky Ace 1943: arrows fly, space fires, B rolls, Esc pauses")
             return
         self.game_name = name
         if name == "voice":

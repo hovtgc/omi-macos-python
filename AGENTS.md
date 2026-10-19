@@ -92,8 +92,13 @@ A connected pendant stops advertising. Close the window before `firmware` or `sc
 | `src/sideband/controls.py` | Controls window: live inputs and the gesture map. |
 | `src/sideband/arcade.py` | Omi Arcade menu (tap to talk, the local LLM picks the game; tap-to-lock tilt calibration), mini game windows, Corn Maze art. |
 | `src/sideband/legend.py` | The control legend: which controls each game and state shows (pure), and the colour-coded chips. |
+| `src/sideband/stage.py` | Shared Ursina window. One Panda process, Tk hub pumped each frame, Esc returns without quitting Sideband. |
+| `src/sideband/desert_world.py` | Desert 91 in Ursina. The fight stays in `desert.py`. |
+| `src/sideband/sky_world.py` | Sky Ace 1943 in Ursina. The dogfight stays in `skyfighter.py`. |
+| `src/sideband/dodger_world.py` | Star Dodger in Ursina. |
+| `src/sideband/corn_world.py` | Corn Maze in Ursina. |
 | `src/sideband/skyfighter.py` | Sky Ace 1943 game state. Pure. |
-| `src/sideband/skyfighter_view.py` | Sky Ace 1943 software 3D renderer (Tk). |
+| `src/sideband/skyfighter_view.py` | Sky Ace 1943 fallback renderer (Tk), used when Ursina is missing. |
 | `src/sideband/meshes.py` | Low-poly aircraft meshes and 3D math. Pure. |
 | `src/sideband/speech.py` | Spoken callouts through macOS `say`; voice choice. |
 | `src/sideband/minigames.py` | Corn Maze (`MarbleMaze`), Star Dodger, Omi Catch. Pure. |

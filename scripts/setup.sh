@@ -29,6 +29,9 @@ say "Creating .venv with Python 3.12"
 EXTRAS="audio,firmware,voice"
 [ "$(uname -m)" = "arm64" ] && EXTRAS="$EXTRAS,transcribe,llm"
 "$UV" pip install --quiet --python .venv/bin/python -e ".[${EXTRAS}]"
+# Name these even when the package version did not change. An editable install
+# that is already satisfied will not pull a dependency added in a later commit.
+"$UV" pip install --quiet --python .venv/bin/python 'pillow>=10' 'ursina>=7'
 .venv/bin/python --version
 
 say "Running the tests (no pendant needed)"

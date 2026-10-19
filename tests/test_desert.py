@@ -8,6 +8,35 @@ from sideband.desert import Orders, Raid, _actor, cast, cell_at, project, tone_w
 from sideband.legend import legend
 
 
+class StageTest(unittest.TestCase):
+    def test_the_3d_host_does_not_open_a_window_on_import(self) -> None:
+        from sideband.desert_world import DesertSession
+        from sideband.stage import available
+
+        self.assertIn(available(), (True, False))
+
+        class Hub:
+            def record_score(self, *_args, **_kwargs) -> None:
+                return None
+
+            def note_device(self, *_args) -> None:
+                return None
+
+            def play_axes(self):
+                return None
+
+            def best(self, _name):
+                return None
+
+            def recentre(self) -> None:
+                return None
+
+        session = DesertSession(Hub(), lambda: None)
+        self.assertFalse(session.playing)
+        self.assertEqual(session.raid.mission, "Berm patrol")
+        self.assertFalse(session.done)
+
+
 class RayTest(unittest.TestCase):
     def test_east_ray_hits_the_far_berm(self) -> None:
         dist, cell, _side = cast(Raid().grid, 2.5, 2.5, 0.0)

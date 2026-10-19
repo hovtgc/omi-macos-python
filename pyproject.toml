@@ -5,7 +5,7 @@ description = "A local Mac arcade. Keyboard, mouse, an Omi pendant or a gamepad.
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
-dependencies = ["bleak>=0.22", "pillow>=10"]
+dependencies = ["bleak>=0.22", "pillow>=10", "ursina>=7"]
 
 [project.optional-dependencies]
 audio = ["av>=12"]

@@ -10,7 +10,7 @@ The picture above is drawn in the repo (no network, no screenshot tool). Drop a 
 |---|---|---|
 | 🕹 | **The shelf** | The window that opens. Cover art, a details strip under the focused card. Arrow keys or the scroll wheel move. Enter plays. Esc goes back. Hover a card, click it to play. |
 | 🎚 | **One-button games** | Beat Tap, Quickdraw, Omi Dash, Simon Omi. Stock pendant firmware is enough: tap, double tap, hold, or a shout. |
-| ✈️ | **Desert 91 and the tilt games** | The flagship is a 1991 raycaster: WASD, mouse look, click to fire. Sky Ace 1943, Omi Flap 3D, Corn Maze, Star Dodger and Omi Catch still tilt. Arrow keys always work. |
+| ✈️ | **Desert 91 and the 3D games** | The flagship is a 1991 desert in a real 3D window: WASD, mouse look, click to fire. Sky Ace 1943, Star Dodger and Corn Maze use the same window. Omi Flap 3D, Omi Catch, Voice Flap and the one-button games still use the built-in view. |
 | 🎙 | **Voice Flap** | Say "go left". Say "play sky ace" from the shelf. Say "settings". |
 | ⚙ | **Everything else** | Thought Map, tap-to-Mac controls, Bluetooth, AI settings, status. The gear at the top right, or Tab. Not on the game row. |
 
@@ -41,11 +41,11 @@ Gamepad (optional): `uv pip install -e '.[gamepad]'` from the repo, with pygame.
 
 | Game | How | Stock firmware |
 |---|---|---|
-| **Desert 91** | Flagship raycaster. Outside Kuwait, 1991. WASD moves, mouse looks, click fires, R reloads. Three short missions. | Keys and mouse. Tilt and a pad work too. |
-| **Sky Ace 1943** | Tilt to fly, tap to fire, shake to roll. Arrows, Space, X, B. | Keys, yes. Tilt needs motion firmware. |
-| **Omi Flap 3D** | Tap flaps, tilt or arrows steer. | Yes, with arrows. |
-| **Corn Maze** | Roll to the barn. Best time is the one that is shorter. | Keys, yes. |
-| **Star Dodger** | Fly, fire, shake for a bomb. | Keys, yes. |
+| **Desert 91** | Flagship, in 3D. Outside Kuwait, 1991. Sand, sun, haze, burning wells, berms, bunkers, soldiers and vehicles. WASD moves, mouse looks, click fires, R reloads, F11 fills the screen. Three short missions. Esc pauses, Esc again returns to the shelf. | Keys and mouse. Tilt and a pad work too. |
+| **Sky Ace 1943** | 3D chase view. Golden hour over the desert. Arrows fly, Space fires, B rolls. | Keys, yes. Tilt needs motion firmware. |
+| **Omi Flap 3D** | Tap flaps, tilt or arrows steer. Built-in view. | Yes, with arrows. |
+| **Corn Maze** | 3D hedges at dusk. Roll to the barn. Best time is the one that is shorter. | Keys, yes. |
+| **Star Dodger** | 3D nebula. Fly, fire, shake for a bomb. | Keys, yes. |
 | **Omi Catch** | Slide the basket. | Keys, yes. |
 | **Voice Flap** | "go left / right / up / down". | Yes. |
 | **Beat Tap** | Tap on the beat. A shout counts. | Yes. |
@@ -76,6 +76,9 @@ Stock Omi firmware leaves the pendant's sensor off. Tilt in the flying games nee
 - A Mac. Apple silicon and macOS 13+ for Whisper and the on-Mac assistant. Keyboard play, Bluetooth, Controls and the shelf work on Intel too.
 - An Omi pendant only if you want that controller. The shelf does not wait for one.
 - About 8 GB free if you download the speech models (`sh scripts/setup.sh`). Skip them with `--no-models` and you can still play.
+- Pillow draws the cover cards. Ursina (Panda3D) draws Desert 91, Sky Ace 1943, Star Dodger and Corn Maze. `sh scripts/setup.sh` installs both. `sideband doctor` flags them if they are missing. The other games keep working on the built-in view.
+
+The 3D scenes use Ursina's procedural shapes, which are MIT licensed ([pokepetter/ursina](https://github.com/pokepetter/ursina)). Sand, sky and nebula textures are generated on the Mac with Pillow. Nothing is downloaded when a game starts.
 
 ## Commands
 

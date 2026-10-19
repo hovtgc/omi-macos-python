@@ -135,6 +135,7 @@ class ArcadeWindow:
         self._photos: dict[tuple, tk.PhotoImage] = {}
         self._bgs: dict[str, tk.PhotoImage | None] = {}
         self._bg_key = ""
+        self._cover_warned = False
         self.canvas.create_rectangle(0, 0, AW, AH, fill=INK, outline="", tags="bg")
         boot_tone(bool(hub.settings.get("arcade_sound", True)))
         self.top.bind("<KeyPress>", self._key)
@@ -494,7 +495,11 @@ class ArcadeWindow:
                 image = ImageEnhance.Brightness(image).enhance(0.32)
                 image = ImageEnhance.Color(image).enhance(0.8)
                 photo = ImageTk.PhotoImage(image)
-            except Exception:
+            except ImportError:
+                self._pillow_missing()
+                photo = None
+            except Exception as exc:
+                self._cover_failed(exc)
                 photo = None
         self._bgs[key] = photo
         return photo
@@ -518,7 +523,11 @@ class ArcadeWindow:
             ImageDraw.Draw(mask).rounded_rectangle((0, 0, width - 1, height - 1), radius=radius, fill=255)
             image.putalpha(mask)
             photo = ImageTk.PhotoImage(image)
-        except Exception:
+        except ImportError:
+            self._pillow_missing()
+            return None
+        except Exception as exc:
+            self._cover_failed(exc)
             return None
         self._photos[token] = photo
         if len(self._photos) > 40:
@@ -600,29 +609,45 @@ class ArcadeWindow:
         if focused:
             round_rect(c, x0, y0, x1, y1, radius, fill="", outline="#ffffff", width=2, tags="dyn")
 
+    def _pillow_missing(self) -> None:
+        if self._cover_warned:
+            return
+        self._cover_warned = True
+        self.hub.log("Cover art needs Pillow. Re-run sh scripts/setup.sh")
+
+    def _cover_failed(self, exc: Exception) -> None:
+        if self._cover_warned:
+            return
+        self._cover_warned = True
+        self.hub.log(f"Cover art could not be loaded ({exc})")
+
     def _fallback(self, spec: object, x0: float, y0: float, x1: float, y1: float, radius: float) -> None:
-        """A quiet panel for a game that does not have a cover yet."""
+        """A painted card when a cover file or Pillow is missing. Title on a gradient, never a dot."""
         c = self.canvas
-        top = tuple(int(channel * 0.45) for channel in _hex(spec.colors[0]))  # type: ignore[attr-defined]
-        bottom = tuple(int(channel * 0.25) for channel in _hex(spec.colors[1]))  # type: ignore[attr-defined]
-        round_rect(c, x0, y0, x1, y1, radius, fill=_mix(top, bottom, 0.45), outline="", tags="dyn")
+        top = tuple(int(channel * 0.55) for channel in _hex(spec.colors[0]))  # type: ignore[attr-defined]
+        bottom = tuple(int(channel * 0.35) for channel in _hex(spec.colors[1]))  # type: ignore[attr-defined]
+        round_rect(c, x0, y0, x1, y1, radius, fill=_mix(top, (20, 16, 12), 0.25), outline="", tags="dyn")
+        mid = y0 + (y1 - y0) * 0.46
+        round_rect(c, x0, mid, x1, y1, radius, fill=_mix(bottom, (12, 10, 8), 0.2), outline="", tags="dyn")
+        c.create_line(x0 + 18, mid, x1 - 18, mid, fill=_mix(top, (255, 244, 220), 0.35), tags="dyn")
         cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
         accent = spec.colors[0]  # type: ignore[attr-defined]
         key = spec.key  # type: ignore[attr-defined]
+        title = str(spec.title)  # type: ignore[attr-defined]
         if key == "beat":
             for i, bh in enumerate((18, 36, 24, 44, 20)):
-                c.create_rectangle(cx - 70 + i * 28, cy + 20 - bh, cx - 54 + i * 28, cy + 20, fill=accent, outline="", tags="dyn")
+                c.create_rectangle(cx - 70 + i * 28, cy - 10 - bh, cx - 54 + i * 28, cy - 10, fill=accent, outline="", tags="dyn")
         elif key == "draw":
-            c.create_oval(cx - 36, cy - 36, cx + 36, cy + 36, outline=accent, width=4, tags="dyn")
-            c.create_oval(cx - 8, cy - 8, cx + 8, cy + 8, fill=accent, outline="", tags="dyn")
+            c.create_oval(cx - 36, cy - 56, cx + 36, cy + 16, outline=accent, width=4, tags="dyn")
+            c.create_oval(cx - 8, cy - 28, cx + 8, cy - 12, fill=accent, outline="", tags="dyn")
         elif key == "dash":
-            c.create_rectangle(cx - 70, cy + 16, cx + 80, cy + 22, fill=accent, outline="", tags="dyn")
-            c.create_rectangle(cx - 20, cy - 18, cx + 4, cy + 16, fill=PAPER, outline="", tags="dyn")
+            c.create_rectangle(cx - 70, cy + 4, cx + 80, cy + 10, fill=accent, outline="", tags="dyn")
+            c.create_rectangle(cx - 20, cy - 30, cx + 4, cy + 4, fill=PAPER, outline="", tags="dyn")
         elif key == "simon":
-            c.create_oval(cx - 48, cy - 28, cx - 4, cy + 28, fill=accent, outline="", tags="dyn")
-            c.create_oval(cx + 4, cy - 28, cx + 48, cy + 28, fill=PAPER, outline="", tags="dyn")
-        else:
-            c.create_oval(cx - 28, cy - 28, cx + 28, cy + 28, fill=accent, outline="", tags="dyn")
+            c.create_oval(cx - 48, cy - 48, cx - 4, cy + 8, fill=accent, outline="", tags="dyn")
+            c.create_oval(cx + 4, cy - 48, cx + 48, cy + 8, fill=PAPER, outline="", tags="dyn")
+        size = max(13, int((x1 - x0) / 18))
+        c.create_text(cx, y1 - max(28, (y1 - y0) * 0.16), text=title, fill=PAPER, font=("Helvetica", size), tags="dyn")
 
     def _details(self) -> None:
         c = self.canvas

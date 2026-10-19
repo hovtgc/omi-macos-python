@@ -30,6 +30,16 @@ class DoctorTest(unittest.TestCase):
         self.assertNotIn("→", Check("x", True, "fine", "do this").line())
         self.assertIn("→ do this", Check("x", False, "broken", "do this").line())
 
+    def test_cover_art_and_the_3d_engine_are_required(self) -> None:
+        from sideband.doctor import EXTRAS, package_checks
+
+        extras = {module: extra for module, _purpose, extra in EXTRAS}
+        self.assertEqual(extras["PIL"], "pillow")
+        self.assertEqual(extras["ursina"], "ursina")
+        checks = {check.name: check for check in package_checks()}
+        self.assertEqual(checks["cover art (PIL)"].fix, "sh scripts/setup.sh")
+        self.assertEqual(checks["3D arcade (ursina)"].fix, "sh scripts/setup.sh")
+
 
 class ReleaseTest(unittest.TestCase):
     def test_pinned_checksum_is_enforced(self) -> None:
