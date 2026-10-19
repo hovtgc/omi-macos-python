@@ -36,7 +36,7 @@ GameSpec(
 
    A game that needs its own drawing (the way Sky Ace does) keeps a window with `on_tap`, `on_hold`, `on_shake`, `close`, `playing` and `top`, and a branch in `Hub.open_game` in `src/sideband/ui.py`. Read the stick from `hub.play_axes()`, and fall back to the arrow keys when that returns None. Call `hub.record_score(key, score)` when the run ends. Corn Maze passes `lower_is_better=True`.
 
-4. **Draw a card.** `_keyart` in `src/sideband/hub_view.py` paints the picture on the shelf. Keep it inside the card rectangle. No downloaded images, no network at runtime.
+4. **Give it a cover.** A 16:9 JPEG with no baked-in title, saved under `src/sideband/assets/covers/` and named in `FILES` in `src/sideband/covers.py`. Until that file exists the shelf draws a flat panel from the game's colours. No downloaded images at runtime.
 
 5. **Test it** in `tests/` with scripted taps. No pendant, no window. `sh scripts/test.sh`.
 

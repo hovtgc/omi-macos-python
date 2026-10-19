@@ -55,6 +55,7 @@ MENU_WORDS = [
     "recording", "record", "transcriber", "controls", "arcade", "bluetooth",
     "voice", "flap", "marble", "maze", "corn", "star", "dodger", "catch", "fighter", "ace", "plane", "sky",
     "beat", "rhythm", "dash", "runner", "simon", "memory", "quickdraw", "draw", "reaction", "settings",
+    "desert", "kuwait", "berm", "storm", "gulf",
     "summarize", "summarise", "summary", "that", "last", "latest", "[unk]",
 ]
 APPS = {"transcriber": "transcriber", "controls": "controls", "arcade": "arcade", "bluetooth": "bluetooth"}

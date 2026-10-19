@@ -29,8 +29,10 @@ class GameSpec:
     stock: bool = False  # fun on stock firmware: taps, holds, voice, mic level. No tilt required.
 
 
-# Order is the shelf order. The first six are the games that were already here.
+# Order is the shelf order. Desert 91 leads; it is the flagship.
 LIBRARY: tuple[GameSpec, ...] = (
+    GameSpec("desert", "DESERT 91", "Outside Kuwait, 1991. Clear the berms.",
+             ("#e6c27a", "#3a2414"), "rifle", False, aliases=("desert", "kuwait", "storm", "berm", "gulf")),
     GameSpec("fighter", "SKY ACE 1943", "WWII dogfight. Tilt to fly, tap to fire, shake to roll.",
              ("#ff9f1c", "#7a2210"), "plane", True, aliases=("fighter", "ace", "plane", "sky")),
     GameSpec("flap", "OMI FLAP 3D", "Tap to flap. Tilt, or the arrow keys, to steer.",
@@ -154,9 +156,13 @@ class Shelf:
             self.page = "games"
 
 
-def shelf_slots(count: int, focus: float, view_w: float, card_w: float = 300, gap: float = 28) -> list[tuple[float, float]]:
-    """`(center_x, scale)` for each card. The focused card sits in the middle and is the largest."""
-    pitch = card_w * 0.72 + gap
+def shelf_slots(count: int, focus: float, view_w: float, card_w: float = 300, gap: float = 28, spread: float = 0.72) -> list[tuple[float, float]]:
+    """`(center_x, scale)` for each card. The focused card sits in the middle and is the largest.
+
+    `spread` is how far the next card sits, as a fraction of `card_w`. Portrait shelves overlap;
+    a landscape row uses something near 1 so the covers sit side by side.
+    """
+    pitch = card_w * spread + gap
     slots = []
     for i in range(count):
         dist = i - focus

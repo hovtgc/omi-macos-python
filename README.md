@@ -1,16 +1,16 @@
 # Sideband
 
-**A game console that lives on your Mac.** Big cards, a glow on the one you've picked, scanlines, and a shelf you can play through with the keyboard. An [Omi](https://github.com/BasedHardware/omi) pendant is a controller when you want one. An Xbox, PlayStation or generic gamepad is too. Nothing is uploaded. There is no account.
+**A game console that lives on your Mac.** Large cover cards, the focused one lifted with a soft glow, and the background taken from that game. Keyboard and mouse first. An [Omi](https://github.com/BasedHardware/omi) pendant is a controller when you want one. An Xbox, PlayStation or generic gamepad is too. Nothing is uploaded. There is no account.
 
-![The Omi Arcade shelf: a focused card scaled up, neon on a dark cabinet](docs/screenshots/home.svg)
+![The shelf: a focused cover card on a darkened blur of the same art](docs/screenshots/home.svg)
 
 The picture above is drawn in the repo (no network, no screenshot tool). Drop a real capture on top of it at `docs/screenshots/home.gif` when you have the app open.
 
 | | | |
 |---|---|---|
-| 🕹 | **The shelf** | The window that opens. Arrow keys or the scroll wheel move. Enter plays. Esc goes back. Hover a card, click it to play. |
+| 🕹 | **The shelf** | The window that opens. Cover art, a details strip under the focused card. Arrow keys or the scroll wheel move. Enter plays. Esc goes back. Hover a card, click it to play. |
 | 🎚 | **One-button games** | Beat Tap, Quickdraw, Omi Dash, Simon Omi. Stock pendant firmware is enough: tap, double tap, hold, or a shout. |
-| ✈️ | **The tilt games** | Sky Ace 1943, Omi Flap 3D, Corn Maze, Star Dodger, Omi Catch. Motion firmware for tilt. Arrow keys always work. |
+| ✈️ | **Desert 91 and the tilt games** | The flagship is a 1991 raycaster: WASD, mouse look, click to fire. Sky Ace 1943, Omi Flap 3D, Corn Maze, Star Dodger and Omi Catch still tilt. Arrow keys always work. |
 | 🎙 | **Voice Flap** | Say "go left". Say "play sky ace" from the shelf. Say "settings". |
 | ⚙ | **Everything else** | Thought Map, tap-to-Mac controls, Bluetooth, AI settings, status. The gear at the top right, or Tab. Not on the game row. |
 
@@ -41,6 +41,7 @@ Gamepad (optional): `uv pip install -e '.[gamepad]'` from the repo, with pygame.
 
 | Game | How | Stock firmware |
 |---|---|---|
+| **Desert 91** | Flagship raycaster. Outside Kuwait, 1991. WASD moves, mouse looks, click fires, R reloads. Three short missions. | Keys and mouse. Tilt and a pad work too. |
 | **Sky Ace 1943** | Tilt to fly, tap to fire, shake to roll. Arrows, Space, X, B. | Keys, yes. Tilt needs motion firmware. |
 | **Omi Flap 3D** | Tap flaps, tilt or arrows steer. | Yes, with arrows. |
 | **Corn Maze** | Roll to the barn. Best time is the one that is shorter. | Keys, yes. |
@@ -81,7 +82,7 @@ Stock Omi firmware leaves the pendant's sensor off. Tilt in the flying games nee
 ```sh
 sideband open arcade          # the shelf. also: launcher, or double-click Sideband.app
 sideband open thoughts        # Thought Map
-sideband open beat            # or draw, dash, simon, fighter, flap, corn, dodger, catch, voice
+sideband open desert          # or beat, draw, dash, simon, fighter, flap, corn, dodger, catch, voice
 sideband doctor [--pendant]
 sideband models --download
 sideband --via-app scan       # radio commands go through Sideband.app

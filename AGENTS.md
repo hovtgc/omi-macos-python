@@ -15,7 +15,7 @@ This stays a Python application. Do not rewrite it in Swift, JavaScript, or as a
 
 ## Product
 
-The home screen is the arcade: a local game shelf (keyboard and mouse first, Omi pendant and gamepads as extra controllers). Sky Ace 1943, Omi Flap 3D, Corn Maze, Star Dodger, Omi Catch, Voice Flap, plus one-button games that need no tilt. Scores stay in `arcade.json` on the Mac. Thought Map, Controls, Bluetooth, AI settings and status are still in the app, behind the gear on the shelf. The assistant is MLX on the Mac by default, or any OpenAI-compatible server (`llm.Backend`). The app also holds the pendant's link in the background, which the official phone app drops when it leaves the foreground. Nothing is uploaded. There is no account.
+The home screen is the arcade: a local game shelf of cover cards (keyboard and mouse first, Omi pendant and gamepads as extra controllers). Desert 91, Sky Ace 1943, Omi Flap 3D, Corn Maze, Star Dodger, Omi Catch, Voice Flap, plus one-button games that need no tilt. Scores stay in `arcade.json` on the Mac. Thought Map, Controls, Bluetooth, AI settings and status are still in the app, behind the gear on the shelf. The assistant is MLX on the Mac by default, or any OpenAI-compatible server (`llm.Backend`). The app also holds the pendant's link in the background, which the official phone app drops when it leaves the foreground. Nothing is uploaded. There is no account.
 
 USB does not carry audio. Do not add a USB transport.
 

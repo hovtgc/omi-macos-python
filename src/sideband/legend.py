@@ -31,6 +31,8 @@ CONTROLS = {
     "y": ("Y", "#ffe66d"),
     "stick": ("STICK", "#ff4fd8"),
     "start": ("START", "#4db8ff"),
+    "mouse": ("MOUSE", "#d6e4ff"),
+    "rkey": ("R", "#ffe66d"),
 }
 
 PLAY = {
@@ -45,6 +47,7 @@ PLAY = {
     "draw": (("tap", "DRAW"), ("hold", "PAUSE")),
     "dash": (("tap", "JUMP"), ("say", "SHOUT"), ("hold", "PAUSE")),
     "simon": (("tap", "GREEN"), ("double", "AMBER"), ("hold", "PAUSE")),
+    "desert": (("tilt", "MOVE"), ("tap", "FIRE"), ("shake", "RELOAD"), ("hold", "PAUSE")),
 }
 STATES = {"ready": "START", "paused": "RESUME", "over": "AGAIN", "won": "NEXT LEVEL"}
 
@@ -82,6 +85,11 @@ def legend(game: str, state: str = "playing", motion: bool = True, device: str =
     On the keyboard that is Enter and Esc. On the Omi it is a tap and a double tap. On a pad it is A and B.
     `device` is "keys", "omi" or "pad". Keyboard is the default. The mic stays on, so "exit game" also goes back.
     """
+    if game == "desert" and state == "playing":
+        if device == "keys":
+            return (("mouse", "LOOK"), ("arrows", "WASD"), ("space", "FIRE"), ("rkey", "RELOAD"), ("esc", "PAUSE"))
+        if device == "pad":
+            return (("stick", "MOVE"), ("a", "FIRE"), ("y", "RELOAD"), ("start", "PAUSE"))
     if game == "menu":
         return MENU.get(device, MENU["keys"])
     if state != "playing":

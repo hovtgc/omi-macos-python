@@ -1134,6 +1134,13 @@ class Hub:
             self.game_name = name
             self.log(f"{name} open: taps, tilt and shakes go to the game")
             return
+        if name == "desert":
+            from sideband.desert_view import DesertWindow
+
+            self.game = DesertWindow(self, self._game_closed)
+            self.game_name = name
+            self.log("Desert 91: WASD moves, mouse looks, click fires, R reloads")
+            return
         if name == "fighter":
             from sideband.skyfighter_view import FighterWindow
 
